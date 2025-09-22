@@ -1,151 +1,630 @@
 package blaze
 
 import (
+	"regexp"
 	"strings"
 )
 
-// Router handles routing
+// Router implements a radix tree-based router with advance features
 type Router struct {
+	root   *routeNode
 	routes map[string]*Route
+	config RouterConfig
 }
 
-// Route represents a single route
+// RouterConfig holds router configuration
+type RouterConfig struct {
+	CaseSensitive          bool
+	StrictSlash            bool
+	RedirectSlash          bool
+	UseEscapedPath         bool
+	HandleMethodNotAllowed bool
+	HandleOPTIONS          bool
+}
+
+// DefaultRouterConfig returns default router configuration
+func DefaultRouterConfig() RouterConfig {
+	return RouterConfig{
+		CaseSensitive:          false,
+		StrictSlash:            false,
+		RedirectSlash:          true,
+		UseEscapedPath:         false,
+		HandleMethodNotAllowed: true,
+		HandleOPTIONS:          true,
+	}
+}
+
+// routeNode represents a node in the radix tree
+type routeNode struct {
+	path       string
+	indices    string
+	children   []*routeNode
+	handlers   map[string]*Route
+	priority   uint32
+	maxParams  uint8
+	wildChild  bool
+	nodeType   nodeType
+	constraint *RouteConstraint
+}
+
+// nodeType defines the type of route node
+type nodeType uint8
+
+const (
+	static nodeType = iota
+	root
+	param
+	catchAll
+)
+
+// RouteConstraint defines constraints for route parameters
+type RouteConstraint struct {
+	Name    string
+	Pattern *regexp.Regexp
+	Type    ConstraintType
+}
+
+// ConstraintType defines the type of constraint
+type ConstraintType string
+
+const (
+	IntConstraint   ConstraintType = "int"
+	UUIDConstraint  ConstraintType = "uuid"
+	AlphaConstraint ConstraintType = "alpha"
+	RegexConstraint ConstraintType = "regex"
+)
+
+// Route represents an enhanced route with constraints and middleware
 type Route struct {
-	method   string
-	pattern  string
-	handler  HandlerFunc
-	segments []string
-	params   []string
+	Method      string
+	Pattern     string
+	Handler     HandlerFunc
+	Middleware  []MiddlewareFunc
+	Constraints map[string]*RouteConstraint
+	Name        string
+	Params      []string
 }
 
-// NewRouter creates a new router
-func NewRouter() *Router {
+// NewRouter creates a new  router
+func NewRouter(config ...RouterConfig) *Router {
+	var cfg RouterConfig
+	if len(config) > 0 {
+		cfg = config[0]
+	} else {
+		cfg = DefaultRouterConfig()
+	}
+
 	return &Router{
+		root:   &routeNode{},
 		routes: make(map[string]*Route),
+		config: cfg,
 	}
 }
 
-// Add adds a route
-func (r *Router) Add(method, pattern string, handler HandlerFunc) {
-	key := method + ":" + pattern
+// AddRoute adds a route with constraints and middleware
+func (r *Router) AddRoute(method, pattern string, handler HandlerFunc, options ...RouteOption) *Route {
 	route := &Route{
-		method:  method,
-		pattern: pattern,
-		handler: handler,
+		Method:      method,
+		Pattern:     pattern,
+		Handler:     handler,
+		Middleware:  make([]MiddlewareFunc, 0),
+		Constraints: make(map[string]*RouteConstraint),
+		Params:      make([]string, 0),
 	}
 
-	// Parse route pattern
-	route.parsePattern()
+	// Apply route options
+	for _, option := range options {
+		option(route)
+	}
 
+	// Parse pattern and extract parameters
+	r.parsePattern(route)
+
+	// Add to radix tree
+	r.addToTree(method, pattern, route)
+
+	// Store route
+	key := method + ":" + pattern
 	r.routes[key] = route
+
+	return route
 }
 
-// GET adds a GET route
-func (r *Router) GET(pattern string, handler HandlerFunc) {
-	r.Add("GET", pattern, handler)
-}
+// RouteOption defines a function to configure routes
+type RouteOption func(*Route)
 
-// POST adds a POST route
-func (r *Router) POST(pattern string, handler HandlerFunc) {
-	r.Add("POST", pattern, handler)
-}
-
-// PUT adds a PUT route
-func (r *Router) PUT(pattern string, handler HandlerFunc) {
-	r.Add("PUT", pattern, handler)
-}
-
-// DELETE adds a DELETE route
-func (r *Router) DELETE(pattern string, handler HandlerFunc) {
-	r.Add("DELETE", pattern, handler)
-}
-
-// PATCH adds a PATCH route
-func (r *Router) PATCH(pattern string, handler HandlerFunc) {
-	r.Add("PATCH", pattern, handler)
-}
-
-// Handler returns a handler function for the router
-func (r *Router) Handler() HandlerFunc {
-	return func(c *Context) error {
-		route, params := r.match(c.Method(), c.Path())
-		if route == nil {
-			return c.Status(404).JSON(Map{
-				"error": "Not Found",
-			})
-		}
-
-		// Set route parameters
-		for key, value := range params {
-			c.SetParam(key, value)
-		}
-
-		return route.handler(c)
+// WithName sets the route name
+func WithName(name string) RouteOption {
+	return func(r *Route) {
+		r.Name = name
 	}
 }
 
-// match finds a matching route
-func (r *Router) match(method, path string) (*Route, map[string]string) {
-	// First try exact match
-	key := method + ":" + path
-	if route, exists := r.routes[key]; exists {
-		return route, make(map[string]string)
+// WithMiddleware adds middleware to the route
+func WithMiddleware(middleware ...MiddlewareFunc) RouteOption {
+	return func(r *Route) {
+		r.Middleware = append(r.Middleware, middleware...)
+	}
+}
+
+// WithConstraint adds a parameter constraint
+func WithConstraint(param string, constraint *RouteConstraint) RouteOption {
+	return func(r *Route) {
+		r.Constraints[param] = constraint
+	}
+}
+
+// WithIntConstraint adds an integer constraint
+func WithIntConstraint(param string) RouteOption {
+	return func(r *Route) {
+		r.Constraints[param] = &RouteConstraint{
+			Name:    param,
+			Type:    IntConstraint,
+			Pattern: regexp.MustCompile(`^\d+$`),
+		}
+	}
+}
+
+// WithUUIDConstraint adds a UUID constraint
+func WithUUIDConstraint(param string) RouteOption {
+	return func(r *Route) {
+		r.Constraints[param] = &RouteConstraint{
+			Name:    param,
+			Type:    UUIDConstraint,
+			Pattern: regexp.MustCompile(`^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}$`),
+		}
+	}
+}
+
+// WithRegexConstraint adds a regex constraint
+func WithRegexConstraint(param string, pattern string) RouteOption {
+	return func(r *Route) {
+		r.Constraints[param] = &RouteConstraint{
+			Name:    param,
+			Type:    RegexConstraint,
+			Pattern: regexp.MustCompile(pattern),
+		}
+	}
+}
+
+// parsePattern parses the route pattern and extracts parameters
+func (r *Router) parsePattern(route *Route) {
+	pattern := route.Pattern
+	segments := strings.Split(strings.Trim(pattern, "/"), "/")
+
+	for _, segment := range segments {
+		if strings.HasPrefix(segment, ":") {
+			paramName := segment[1:]
+			route.Params = append(route.Params, paramName)
+		} else if strings.HasPrefix(segment, "*") {
+			paramName := segment[1:]
+			if paramName == "" {
+				paramName = "wildcard"
+			}
+			route.Params = append(route.Params, paramName)
+		}
+	}
+}
+
+// addToTree adds a route to the radix tree
+func (r *Router) addToTree(method, pattern string, route *Route) {
+	path := pattern
+	if !r.config.CaseSensitive {
+		path = strings.ToLower(path)
 	}
 
-	// Try pattern matching
-	pathSegments := strings.Split(strings.Trim(path, "/"), "/")
+	root := r.root
+	if root.handlers == nil {
+		root.handlers = make(map[string]*Route)
+	}
 
-	for _, route := range r.routes {
-		if route.method != method {
+	r.insertRoute(root, method, path, route)
+}
+
+// insertRoute inserts a route into the tree
+func (r *Router) insertRoute(n *routeNode, method, path string, route *Route) {
+	// _originalPath := path
+	fullPath := path
+	n.priority++
+
+walk:
+	for {
+		// Find the longest common prefix
+		i := longestCommonPrefix(path, n.path)
+
+		// Split edge
+		if i < len(n.path) {
+			child := &routeNode{
+				path:      n.path[i:],
+				wildChild: n.wildChild,
+				nodeType:  static,
+				indices:   n.indices,
+				children:  n.children,
+				handlers:  n.handlers,
+				priority:  n.priority - 1,
+			}
+
+			n.children = []*routeNode{child}
+			n.indices = string([]byte{n.path[i]})
+			n.path = path[:i]
+			n.handlers = nil
+			n.wildChild = false
+		}
+
+		// Make new node a child of this node
+		if i < len(path) {
+			path = path[i:]
+
+			if n.wildChild {
+				n = n.children[0]
+				n.priority++
+
+				// Check if the wildcard matches
+				if len(path) >= len(n.path) && n.path == path[:len(n.path)] {
+					// Check for longer wildcard
+					if len(n.path) >= len(path) || path[len(n.path)] == '/' {
+						continue walk
+					}
+				}
+
+				panic("path segment '" + path +
+					"' conflicts with existing wildcard '" + n.path +
+					"' in path '" + fullPath + "'")
+			}
+
+			c := path[0]
+
+			// Param node
+			if n.nodeType == param && c == '/' && len(n.children) == 1 {
+				n = n.children[0]
+				n.priority++
+				continue walk
+			}
+
+			// Check if a child with the next path byte exists
+			for i, max := 0, len(n.indices); i < max; i++ {
+				if c == n.indices[i] {
+					i = n.incrementChildPrio(i)
+					n = n.children[i]
+					continue walk
+				}
+			}
+
+			// Otherwise insert it
+			if c != ':' && c != '*' {
+				// []byte for proper sorting
+				n.indices += string([]byte{c})
+				child := &routeNode{
+					maxParams: route.maxParams(),
+				}
+				n.children = append(n.children, child)
+				n.incrementChildPrio(len(n.indices) - 1)
+				n = child
+			}
+			n.insertChild(path, fullPath, route, method)
+			return
+		}
+
+		// Otherwise add handler to current node
+		if n.handlers == nil {
+			n.handlers = make(map[string]*Route)
+		}
+		n.handlers[method] = route
+		return
+	}
+}
+
+// insertChild inserts a child node
+func (n *routeNode) insertChild(path, fullPath string, route *Route, method string) {
+	for {
+		// Find prefix until first wildcard
+		wildcard, i, valid := findWildcard(path)
+		if i < 0 { // No wildcard found
+			break
+		}
+
+		// The wildcard name must not contain ':' and '*'
+		if !valid {
+			panic("only one wildcard per path segment is allowed, has: '" +
+				wildcard + "' in path '" + fullPath + "'")
+		}
+
+		// Check if the wildcard has a name
+		if len(wildcard) < 2 {
+			panic("wildcards must be named with a non-empty name in path '" + fullPath + "'")
+		}
+
+		// Split path at the beginning of the wildcard
+		if i > 0 {
+			n.path = path[:i]
+			path = path[i:]
+		}
+
+		if wildcard[0] == ':' { // param
+			// Split path at the end of the wildcard
+			if i := strings.Index(wildcard, "/"); i > 0 {
+				n.path += wildcard[:i]
+				wildcard = wildcard[i:]
+			}
+
+			child := &routeNode{
+				nodeType:  param,
+				path:      wildcard,
+				maxParams: route.maxParams(),
+			}
+			n.children = []*routeNode{child}
+			n.wildChild = true
+			n = child
+			n.priority++
+
+			// If the path doesn't end with the wildcard, then there
+			// will be another subpath starting with '/'
+			if len(wildcard) < len(path) {
+				path = path[len(wildcard):]
+				child := &routeNode{
+					maxParams: route.maxParams(),
+					priority:  1,
+				}
+				n.children = []*routeNode{child}
+				n = child
+				continue
+			}
+
+			// Otherwise we're done. Insert the handler in the new leaf
+			if n.handlers == nil {
+				n.handlers = make(map[string]*Route)
+			}
+			n.handlers[method] = route
+			return
+
+		} else { // catchAll
+			if i+len(wildcard) != len(path) {
+				panic("catch-all routes are only allowed at the end of the path in path '" + fullPath + "'")
+			}
+
+			if len(n.path) > 0 && n.path[len(n.path)-1] == '/' {
+				panic("catch-all conflicts with existing handle for the path segment root in path '" + fullPath + "'")
+			}
+
+			// Currently fixed width 1 for '/'
+			i--
+			if path[i] != '/' {
+				panic("no / before catch-all in path '" + fullPath + "'")
+			}
+
+			n.path = path[:i]
+
+			// First node: catchAll node with empty path
+			child := &routeNode{
+				wildChild: true,
+				nodeType:  catchAll,
+				maxParams: route.maxParams(),
+			}
+
+			n.children = []*routeNode{child}
+			n.indices = string('/')
+			n = child
+			n.priority++
+
+			// Second node: node holding the variable
+			child = &routeNode{
+				path:      path[i:],
+				nodeType:  catchAll,
+				maxParams: route.maxParams(),
+				handlers:  make(map[string]*Route),
+				priority:  1,
+			}
+			child.handlers[method] = route
+			n.children = []*routeNode{child}
+
+			return
+		}
+	}
+
+	// If no wildcard was found, simply insert the path and handler
+	n.path = path
+	if n.handlers == nil {
+		n.handlers = make(map[string]*Route)
+	}
+	n.handlers[method] = route
+}
+
+// Find matching route
+func (r *Router) FindRoute(method, path string) (*Route, map[string]string, bool) {
+	if !r.config.CaseSensitive {
+		path = strings.ToLower(path)
+	}
+
+	root := r.root
+	params := make(map[string]string)
+
+	route, found := r.getValue(root, path, method, params)
+	if !found {
+		return nil, nil, false
+	}
+
+	// Validate constraints
+	if !r.validateConstraints(route, params) {
+		return nil, nil, false
+	}
+
+	return route, params, true
+}
+
+// getValue traverses the tree to find a matching route
+func (r *Router) getValue(n *routeNode, path, method string, params map[string]string) (*Route, bool) {
+walk: // Outer loop for walking the tree
+	for {
+		prefix := n.path
+		if len(path) > len(prefix) {
+			if path[:len(prefix)] == prefix {
+				path = path[len(prefix):]
+
+				// Try all the non-wildcard children first
+				for i, max := 0, len(n.indices); i < max; i++ {
+					c := n.indices[i]
+					if c == path[0] {
+						n = n.children[i]
+						continue walk
+					}
+				}
+
+				// If there is no wildcard, we can't match the route
+				if !n.wildChild {
+					return nil, false
+				}
+
+				// Handle wildcard child
+				n = n.children[0]
+				switch n.nodeType {
+				case param:
+					// Find end (either '/' or path end)
+					end := 0
+					for end < len(path) && path[end] != '/' {
+						end++
+					}
+
+					// Save param value
+					paramKey := n.path[1:] // Remove ':'
+					params[paramKey] = path[:end]
+
+					// We need to go deeper!
+					if end < len(path) {
+						if len(n.children) > 0 {
+							path = path[end:]
+							n = n.children[0]
+							continue walk
+						}
+
+						// ... but we can't
+						return nil, false
+					}
+
+					if route, ok := n.handlers[method]; ok {
+						return route, true
+					}
+
+					if len(n.children) == 1 {
+						// No handler found. Check if a handler for this route + a
+						// trailing slash exists for trailing slash recommendation
+						n = n.children[0]
+						if n.path == "/" && n.handlers[method] != nil {
+							return n.handlers[method], true
+						}
+					}
+
+					return nil, false
+
+				case catchAll:
+					// Save param value
+					paramKey := n.path[2:] // Remove '*'
+					params[paramKey] = path
+
+					if route, ok := n.handlers[method]; ok {
+						return route, true
+					}
+
+					return nil, false
+
+				default:
+					panic("invalid node type")
+				}
+			}
+		} else if path == prefix {
+			if route, ok := n.handlers[method]; ok {
+				return route, true
+			}
+
+			// Handle trailing slash
+			if path == "/" && r.config.RedirectSlash && method != "CONNECT" {
+				if route, ok := n.handlers[method]; ok {
+					return route, true
+				}
+			}
+
+			return nil, false
+		}
+
+		// Nothing found
+		return nil, false
+	}
+}
+
+// validateConstraints validates route parameter constraints
+func (r *Router) validateConstraints(route *Route, params map[string]string) bool {
+	for paramName, constraint := range route.Constraints {
+		value, exists := params[paramName]
+		if !exists {
 			continue
 		}
 
-		if params := route.matchSegments(pathSegments); params != nil {
-			return route, params
+		if !constraint.Pattern.MatchString(value) {
+			return false
 		}
 	}
-
-	return nil, nil
+	return true
 }
 
-// parsePattern parses the route pattern into segments and parameters
-func (r *Route) parsePattern() {
-	pattern := strings.Trim(r.pattern, "/")
-	if pattern == "" {
-		r.segments = []string{}
-		return
+// Helper methods for Route
+func (r *Route) maxParams() uint8 {
+	return uint8(len(r.Params))
+}
+
+// incrementChildPrio increments the priority of the given child and reorders if necessary
+func (n *routeNode) incrementChildPrio(pos int) int {
+	cs := n.children
+	cs[pos].priority++
+	prio := cs[pos].priority
+
+	// Adjust position (move to front)
+	newPos := pos
+	for ; newPos > 0 && cs[newPos-1].priority < prio; newPos-- {
+		// Swap node positions
+		cs[newPos-1], cs[newPos] = cs[newPos], cs[newPos-1]
 	}
 
-	r.segments = strings.Split(pattern, "/")
-	r.params = make([]string, 0)
+	// Build new index char string
+	if newPos != pos {
+		n.indices = n.indices[:newPos] + // unchanged prefix, might be empty
+			n.indices[pos:pos+1] + // the index char we move
+			n.indices[newPos:pos] + n.indices[pos+1:] // rest without char at 'pos'
+	}
 
-	for _, segment := range r.segments {
-		if strings.HasPrefix(segment, ":") {
-			r.params = append(r.params, segment[1:])
+	return newPos
+}
+
+// Helper functions
+func longestCommonPrefix(a, b string) int {
+	i := 0
+	max := len(a)
+	if len(b) < max {
+		max = len(b)
+	}
+	for i < max && a[i] == b[i] {
+		i++
+	}
+	return i
+}
+
+func findWildcard(path string) (wildcard string, i int, valid bool) {
+	// Find start
+	for start, c := range []byte(path) {
+		// A wildcard starts with ':' (param) or '*' (catch-all)
+		if c != ':' && c != '*' {
+			continue
 		}
-	}
-}
 
-// matchSegments matches path segments against route pattern
-func (r *Route) matchSegments(pathSegments []string) map[string]string {
-	if len(pathSegments) != len(r.segments) {
-		return nil
-	}
-
-	params := make(map[string]string)
-
-	for i, segment := range r.segments {
-		if strings.HasPrefix(segment, ":") {
-			// Parameter segment
-			paramName := segment[1:]
-			params[paramName] = pathSegments[i]
-		} else {
-			// Literal segment
-			if segment != pathSegments[i] {
-				return nil
+		// Find end and check for invalid characters
+		valid = true
+		for end, c := range []byte(path[start+1:]) {
+			switch c {
+			case '/':
+				return path[start : start+1+end], start, valid
+			case ':', '*':
+				valid = false
 			}
 		}
+		return path[start:], start, valid
 	}
-
-	return params
+	return "", -1, false
 }

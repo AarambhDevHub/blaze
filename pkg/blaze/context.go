@@ -28,6 +28,24 @@ func (c *Context) Param(key string) string {
 	return c.params[key]
 }
 
+// ParamInt returns the route parameter as integer
+func (c *Context) ParamInt(key string) (int, error) {
+	value := c.Param(key)
+	if value == "" {
+		return 0, fmt.Errorf("parameter %s not found", key)
+	}
+	return strconv.Atoi(value)
+}
+
+// ParamIntDefault returns the route parameter as integer or default
+func (c *Context) ParamIntDefault(key string, defaultValue int) int {
+	value, err := c.ParamInt(key)
+	if err != nil {
+		return defaultValue
+	}
+	return value
+}
+
 // SetParam sets a route parameter
 func (c *Context) SetParam(key, value string) {
 	if c.params == nil {

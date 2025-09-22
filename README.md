@@ -7,16 +7,16 @@ A blazing fast, lightweight web framework for Go inspired by Axum and Actix Web.
 Blaze delivers **exceptional performance** with minimal overhead:
 
 ```
-Requests/sec: 174,654.41
-Transfer/sec:  80.95MB
-Latency:       0.78ms avg
+Requests/sec: 188,463.82
+Transfer/sec:  87.35MB
+Latency:       750.30μs avg
 ```
 
 *Benchmarked with `wrk -c100 -d30s` on a simple endpoint.*
 
 ## ✨ Features
 
-- **🔥 Blazing Fast**: Built on fasthttp for maximum performance (155K+ req/sec)
+- **🔥 Blazing Fast**: Built on fasthttp for maximum performance (188K+ req/sec)
 - **🪶 Lightweight**: Minimal memory footprint and zero-allocation hot paths
 - **🛡️ Type Safe**: Full type safety with Go's type system
 - **🔧 Middleware**: Composable middleware system with built-in common middlewares
@@ -125,9 +125,9 @@ app.Post("/users", func(c *blaze.Context) error {
             "error": "Invalid JSON",
         })
     }
-    
+
     // Process user...
-    
+
     return c.Status(201).JSON(user)
 })
 ```
@@ -139,7 +139,7 @@ app.Get("/search", func(c *blaze.Context) error {
     query := c.Query("q")
     page := c.QueryIntDefault("page", 1)
     limit := c.QueryIntDefault("limit", 10)
-    
+
     return c.JSON(blaze.Map{
         "query": query,
         "page":  page,
@@ -173,7 +173,7 @@ app.Use(blaze.RequestIDMiddleware())
 
 Framework | Req/sec | Latency | Memory | Notes
 ----------|---------|---------|--------|---------
-**Blaze** | **175K** | **0.78ms** | **Low** | FastHTTP-based
+**Blaze** | **188K** | **0.75ms** | **Low** | FastHTTP-based
 Fiber | 165K | 0.60ms | Low | Express-like, FastHTTP
 gnet | 200K+ | 0.5ms | Very Low | Event-driven
 Gin | 50K | 10ms | Medium | Most popular

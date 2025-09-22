@@ -76,7 +76,7 @@ func setupRoutes(app *blaze.App) {
 	// Example CRUD endpoints
 	api.GET("/items", listItems)
 	api.POST("/items", createItem)
-	api.GET("/items/:id", getItem)
+	api.GET("/items/:id", getItem, blaze.WithIntConstraint("id"))
 	api.PUT("/items/:id", updateItem)
 	api.DELETE("/items/:id", deleteItem)
 
@@ -170,9 +170,10 @@ func createItem(c *blaze.Context) error {
 }
 
 func getItem(c *blaze.Context) error {
-	id, err := c.QueryInt("id")
+	id, err := c.ParamInt("id")
+
 	if err != nil {
-		return blaze.BadRequest(c, "Invalid item ID")
+		return blaze.BadRequest(c, "Invalid ID format")
 	}
 
 	for _, item := range items {
