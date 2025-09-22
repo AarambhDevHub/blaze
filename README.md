@@ -7,9 +7,9 @@ A blazing fast, lightweight web framework for Go inspired by Axum and Actix Web.
 Blaze delivers **exceptional performance** with minimal overhead:
 
 ```
-Requests/sec: 155,317.29
-Transfer/sec:  71.99MB
-Latency:       0.91ms avg
+Requests/sec: 174,654.41
+Transfer/sec:  80.95MB
+Latency:       0.78ms avg
 ```
 
 *Benchmarked with `wrk -c100 -d30s` on a simple endpoint.*
@@ -171,12 +171,15 @@ app.Use(blaze.RequestIDMiddleware())
 
 ## 📊 Performance Comparison
 
-Framework | Req/sec | Latency | Memory
-----------|---------|---------|--------
-**Blaze** | **155K** | **0.91ms** | **Low**
-Fiber | 165K | 0.60ms | Medium
-Gin | 80K | 1.2ms | Medium
-Echo | 70K | 1.4ms | Medium
+Framework | Req/sec | Latency | Memory | Notes
+----------|---------|---------|--------|---------
+**Blaze** | **175K** | **0.78ms** | **Low** | FastHTTP-based
+Fiber | 165K | 0.60ms | Low | Express-like, FastHTTP
+gnet | 200K+ | 0.5ms | Very Low | Event-driven
+Gin | 50K | 10ms | Medium | Most popular
+Echo | 40K | 15ms | Medium | Minimalist design
+Chi | 35K | 20ms | Low | Lightweight router
+Standard | 17K | 25ms | Medium | Go stdlib
 
 ## 🏗️ Project Structure
 
