@@ -1,0 +1,245 @@
+# Blaze Go Web Framework - .gitignore
+
+###################
+# Binaries & Executables
+###################
+*.exe
+*.exe~
+*.dll
+*.so
+*.dylib
+
+# Test binary, built with `go test -c`
+*.test
+
+# Output of the go coverage tool
+*.out
+
+# Go workspace file
+go.work
+go.work.sum
+
+###################
+# Build & Distribution
+###################
+# Build directories
+/build/
+/dist/
+/bin/
+/target/
+
+# Vendor directory (uncomment if you vendor dependencies)
+# vendor/
+
+###################
+# Logs & Temporary Files  
+###################
+*.log
+*.tmp
+*.temp
+*.pid
+*.lock
+
+# Application logs
+logs/
+*.log.*
+
+###################
+# Development Environment
+###################
+# IDE - GoLand/IntelliJ
+.idea/
+*.iml
+*.iws
+*.ipr
+
+# IDE - VS Code
+.vscode/
+!.vscode/settings.json
+!.vscode/tasks.json
+!.vscode/launch.json
+!.vscode/extensions.json
+
+# IDE - Vim
+*.swp
+*.swo
+*~
+
+# IDE - Emacs
+*~
+\#*\#
+/.emacs.desktop
+/.emacs.desktop.lock
+*.elc
+auto-save-list
+tramp
+.\#*
+
+###################
+# OS Generated Files
+###################
+# macOS
+.DS_Store
+.DS_Store?
+._*
+.Spotlight-V100
+.Trashes
+ehthumbs.db
+Thumbs.db
+
+# Windows
+Desktop.ini
+$RECYCLE.BIN/
+
+# Linux
+*~
+.directory
+
+###################
+# Application Specific
+###################
+# Configuration files (keep templates)
+config/local.yml
+config/local.yaml
+config/local.json
+config/secrets.yml
+config/secrets.yaml
+config/secrets.json
+.env
+.env.local
+.env.*.local
+
+# Database files
+*.db
+*.sqlite
+*.sqlite3
+data/
+
+# Upload directories
+uploads/
+storage/
+tmp/
+
+# SSL certificates
+*.pem
+*.key
+*.crt
+*.csr
+*.p12
+ssl/
+certs/
+
+# Cache directories
+cache/
+.cache/
+
+###################
+# Testing
+###################
+# Test coverage
+coverage.html
+coverage.out
+coverage.xml
+c.out
+
+# Test results
+test-results/
+*.cover
+
+###################
+# Documentation
+###################
+# Generated docs (keep source docs)
+/docs/build/
+/docs/_build/
+
+###################
+# Performance & Profiling
+###################
+# pprof files
+*.prof
+*.pprof
+cpu.prof
+mem.prof
+trace.out
+
+# Benchmark results
+*.bench
+
+###################
+# Dependencies & Modules
+###################
+# Air live reload
+.air.toml
+tmp/
+
+# Wire dependency injection
+wire_gen.go
+
+###################
+# Deployment
+###################
+# Docker
+.dockerignore
+
+# Kubernetes
+*.kubeconfig
+
+# Terraform
+*.tfstate
+*.tfstate.*
+*.tfvars
+.terraform/
+
+###################
+# Monitoring & Analytics
+###################
+# APM tools
+newrelic.yml
+elastic-apm.yml
+
+###################
+# Web Framework Specific
+###################
+# Static assets build
+/public/build/
+/static/build/
+/assets/build/
+
+# Template cache
+templates/cache/
+
+# Session files
+sessions/
+
+# PID files
+*.pid
+
+###################
+# Examples & Testing (Optional)
+###################
+# Uncomment if you want to ignore example binaries
+# /examples/*/main
+# /examples/*/app
+# /cmd/*/main
+# /cmd/*/app
+
+###################
+# Security
+###################
+# Private keys
+id_rsa
+id_rsa.*
+*.pem
+
+# Environment variables
+.env*
+!.env.example
+
+###################
+# Backup Files
+###################
+*.bak
+*.backup
+*.old
+*.orig
