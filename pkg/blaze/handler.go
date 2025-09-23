@@ -8,20 +8,20 @@ type MiddlewareFunc func(HandlerFunc) HandlerFunc
 
 // Handler wraps HandlerFunc to satisfy the interface
 type Handler interface {
-    Handle(*Context) error
+	Handle(*Context) error
 }
 
 // HandlerAdapter adapts HandlerFunc to Handler interface
 type HandlerAdapter struct {
-    handler HandlerFunc
+	handler HandlerFunc
 }
 
 // Handle implements the Handler interface
 func (h *HandlerAdapter) Handle(c *Context) error {
-    return h.handler(c)
+	return h.handler(c)
 }
 
 // NewHandler creates a new Handler from HandlerFunc
 func NewHandler(handler HandlerFunc) Handler {
-    return &HandlerAdapter{handler: handler}
+	return &HandlerAdapter{handler: handler}
 }

@@ -1,8 +1,13 @@
 package blaze
 
 import (
+	"context"
 	"fmt"
 	"log"
+	"os"
+	"os/signal"
+	"sync"
+	"syscall"
 	"time"
 
 	"github.com/valyala/fasthttp"
@@ -14,6 +19,14 @@ type App struct {
 	middleware []MiddlewareFunc
 	server     *fasthttp.Server
 	config     *Config
+
+	// Graceful shutdown fields
+	shutdownCtx    context.Context
+	shutdownCancel context.CancelFunc
+	shutdownWg     sync.WaitGroup
+	shutdownOnce   sync.Once
+	isShuttingDown bool
+	mu             sync.RWMutex
 }
 
 // Config holds application configuration
@@ -40,20 +53,180 @@ func DefaultConfig() *Config {
 
 // New creates a new Blaze application
 func New() *App {
+	ctx, cancel := context.WithCancel(context.Background())
+
 	return &App{
-		router:     NewRouter(),
-		middleware: make([]MiddlewareFunc, 0),
-		config:     DefaultConfig(),
+		router:         NewRouter(),
+		middleware:     make([]MiddlewareFunc, 0),
+		config:         DefaultConfig(),
+		shutdownCtx:    ctx,
+		shutdownCancel: cancel,
 	}
 }
 
-// NewWithConfig creates a new Blaze application with custom config
+// Update the NewWithConfig function
 func NewWithConfig(config *Config) *App {
+	ctx, cancel := context.WithCancel(context.Background())
 	return &App{
-		router:     NewRouter(),
-		middleware: make([]MiddlewareFunc, 0),
-		config:     config,
+		router:         NewRouter(),
+		middleware:     make([]MiddlewareFunc, 0),
+		config:         config,
+		shutdownCtx:    ctx,
+		shutdownCancel: cancel,
 	}
+}
+
+// IsShuttingDown returns true if the app is in shutdown process
+func (a *App) IsShuttingDown() bool {
+	a.mu.RLock()
+	defer a.mu.RUnlock()
+	return a.isShuttingDown
+}
+
+// setShuttingDown sets the shutdown state
+func (a *App) setShuttingDown(state bool) {
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	a.isShuttingDown = state
+}
+
+// GetShutdownContext returns the shutdown context
+func (a *App) GetShutdownContext() context.Context {
+	return a.shutdownCtx
+}
+
+// RegisterGracefulTask registers a task for graceful shutdown
+func (a *App) RegisterGracefulTask(task func(ctx context.Context) error) {
+	a.shutdownWg.Add(1)
+	go func() {
+		defer a.shutdownWg.Done()
+		<-a.shutdownCtx.Done()
+
+		taskCtx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+		defer cancel()
+
+		if err := task(taskCtx); err != nil {
+			log.Printf("Graceful task error: %v", err)
+		}
+	}()
+}
+
+// Shutdown gracefully shuts down the server
+func (a *App) Shutdown(ctx context.Context) error {
+	var shutdownErr error
+
+	a.shutdownOnce.Do(func() {
+		log.Println("🛑 Initiating graceful shutdown...")
+		a.setShuttingDown(true)
+
+		// Cancel shutdown context to notify all tasks
+		a.shutdownCancel()
+
+		// Create a channel to handle shutdown completion
+		done := make(chan error, 1)
+
+		go func() {
+			// Wait for all graceful tasks to complete
+			log.Println("⏳ Waiting for graceful tasks to complete...")
+			a.shutdownWg.Wait()
+
+			// Shutdown the server
+			if a.server != nil {
+				log.Println("🔌 Shutting down HTTP server...")
+				if err := a.server.Shutdown(); err != nil {
+					done <- fmt.Errorf("server shutdown error: %w", err)
+					return
+				}
+			}
+
+			log.Println("✅ Graceful shutdown completed")
+			done <- nil
+		}()
+
+		// Wait for shutdown to complete or timeout
+		select {
+		case shutdownErr = <-done:
+			// Shutdown completed
+		case <-ctx.Done():
+			shutdownErr = ctx.Err()
+			log.Printf("⚠️ Graceful shutdown timeout: %v", shutdownErr)
+
+			// Force shutdown if graceful shutdown times out
+			if a.server != nil {
+				log.Println("🚨 Forcing server shutdown...")
+				a.server.Shutdown() // Force shutdown
+			}
+		}
+	})
+
+	return shutdownErr
+}
+
+// ListenWithGracefulShutdown starts the server with automatic graceful shutdown handling
+func (a *App) ListenWithGracefulShutdown(signals ...os.Signal) error {
+	return a.listenWithGracefulShutdown("", "", signals...)
+}
+
+// ListenTLSWithGracefulShutdown starts the TLS server with automatic graceful shutdown handling
+func (a *App) ListenTLSWithGracefulShutdown(certFile, keyFile string, signals ...os.Signal) error {
+	return a.listenWithGracefulShutdown(certFile, keyFile, signals...)
+}
+
+// listenWithGracefulShutdown is the internal implementation for graceful server startup and shutdown
+func (a *App) listenWithGracefulShutdown(certFile, keyFile string, signals ...os.Signal) error {
+	// Default signals if none provided
+	if len(signals) == 0 {
+		signals = []os.Signal{syscall.SIGINT, syscall.SIGTERM}
+	}
+
+	// Setup server
+	addr := fmt.Sprintf("%s:%d", a.config.Host, a.config.Port)
+	a.server = &fasthttp.Server{
+		Handler:            a.handler,
+		ReadTimeout:        a.config.ReadTimeout,
+		WriteTimeout:       a.config.WriteTimeout,
+		MaxRequestBodySize: a.config.MaxRequestBodySize,
+		Concurrency:        a.config.Concurrency,
+	}
+
+	// Channel to receive server errors
+	serverError := make(chan error, 1)
+
+	// Start server in goroutine
+	go func() {
+		var err error
+		if certFile != "" && keyFile != "" {
+			log.Printf("🔒 Blaze server starting with TLS on https://%s", addr)
+			err = a.server.ListenAndServeTLS(addr, certFile, keyFile)
+		} else {
+			log.Printf("🚀 Blaze server starting on http://%s", addr)
+			err = a.server.ListenAndServe(addr)
+		}
+
+		// Only send error if it's not from graceful shutdown
+		if err != nil && !a.IsShuttingDown() {
+			serverError <- err
+		}
+	}()
+
+	// Channel to receive OS signals
+	signalChan := make(chan os.Signal, 1)
+	signal.Notify(signalChan, signals...)
+
+	// Wait for either server error or shutdown signal
+	select {
+	case err := <-serverError:
+		return fmt.Errorf("server error: %w", err)
+	case sig := <-signalChan:
+		log.Printf("📡 Received shutdown signal: %v", sig)
+	}
+
+	// Create shutdown context with timeout
+	shutdownCtx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+
+	// Perform graceful shutdown
+	return a.Shutdown(shutdownCtx)
 }
 
 // Use adds middleware to the application
@@ -89,6 +262,30 @@ func (a *App) DELETE(path string, handler HandlerFunc, options ...RouteOption) *
 // PATCH registers a PATCH route
 func (a *App) PATCH(path string, handler HandlerFunc, options ...RouteOption) *App {
 	a.router.AddRoute("PATCH", path, handler, options...)
+	return a
+}
+
+// WebSocket upgrades HTTP connection to WebSocket
+func (a *App) WebSocket(path string, handler WebSocketHandler, options ...RouteOption) *App {
+	upgrader := NewWebSocketUpgrader()
+
+	wsHandler := func(c *Context) error {
+		return upgrader.Upgrade(c, handler)
+	}
+
+	a.router.AddRoute("GET", path, wsHandler, options...)
+	return a
+}
+
+// WebSocketWithConfig upgrades HTTP connection to WebSocket with custom config
+func (a *App) WebSocketWithConfig(path string, handler WebSocketHandler, config *WebSocketConfig, options ...RouteOption) *App {
+	upgrader := NewWebSocketUpgrader(config)
+
+	wsHandler := func(c *Context) error {
+		return upgrader.Upgrade(c, handler)
+	}
+
+	a.router.AddRoute("GET", path, wsHandler, options...)
 	return a
 }
 
@@ -141,17 +338,15 @@ func (a *App) ListenTLS(certFile, keyFile string) error {
 	return a.server.ListenAndServeTLS(addr, certFile, keyFile)
 }
 
-// Shutdown gracefully shuts down the server
-func (a *App) Shutdown() error {
-	if a.server != nil {
-		return a.server.Shutdown()
-	}
-	return nil
-}
-
 // handler is the main request handler that applies middleware and routing
-// Updated handler method to use advanced router when enabled
 func (a *App) handler(ctx *fasthttp.RequestCtx) {
+	// Check if server is shutting down
+	if a.IsShuttingDown() {
+		ctx.SetStatusCode(fasthttp.StatusServiceUnavailable)
+		ctx.SetBody([]byte("Server is shutting down"))
+		return
+	}
+
 	blazeCtx := &Context{
 		RequestCtx: ctx,
 		params:     make(map[string]string),
@@ -246,4 +441,31 @@ func (g *Group) wrapHandler(handler HandlerFunc) HandlerFunc {
 		handler = g.middleware[i](handler)
 	}
 	return handler
+}
+
+func (g *Group) WebSocket(path string, handler WebSocketHandler, options ...RouteOption) *Group {
+	fullPath := g.prefix + path
+	upgrader := NewWebSocketUpgrader()
+
+	wsHandler := func(c *Context) error {
+		return upgrader.Upgrade(c, handler)
+	}
+
+	wrappedHandler := g.wrapHandler(wsHandler)
+	g.app.router.AddRoute("GET", fullPath, wrappedHandler, options...)
+	return g
+}
+
+// WebSocketWithConfig registers a WebSocket route with custom config in the group
+func (g *Group) WebSocketWithConfig(path string, handler WebSocketHandler, config *WebSocketConfig, options ...RouteOption) *Group {
+	fullPath := g.prefix + path
+	upgrader := NewWebSocketUpgrader(config)
+
+	wsHandler := func(c *Context) error {
+		return upgrader.Upgrade(c, handler)
+	}
+
+	wrappedHandler := g.wrapHandler(wsHandler)
+	g.app.router.AddRoute("GET", fullPath, wrappedHandler, options...)
+	return g
 }

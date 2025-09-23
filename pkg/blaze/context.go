@@ -1,6 +1,8 @@
 package blaze
 
 import (
+	"context"
+	"encoding/json"
 	"fmt"
 	"net"
 	"strconv"
@@ -280,4 +282,109 @@ func (c *Context) RemoteIP() net.IP {
 // UserAgent returns the User-Agent header
 func (c *Context) UserAgent() string {
 	return string(c.RequestCtx.UserAgent())
+}
+
+// MarshalJSON converts blaze.Map to JSON bytes
+func (m Map) MarshalJSON() ([]byte, error) {
+	return json.Marshal(map[string]interface{}(m))
+}
+
+// ToJSON converts blaze.Map to JSON string
+func (m Map) ToJSON() (string, error) {
+	data, err := json.Marshal(map[string]interface{}(m))
+	if err != nil {
+		return "", err
+	}
+	return string(data), nil
+}
+
+// ToJSONBytes converts blaze.Map to JSON byte slice
+func (m Map) ToJSONBytes() ([]byte, error) {
+	return json.Marshal(map[string]interface{}(m))
+}
+
+// ShutdownContext returns the app's shutdown context
+func (c *Context) ShutdownContext() context.Context {
+	if ctx := c.Locals("shutdown_ctx"); ctx != nil {
+		if shutdownCtx, ok := ctx.(context.Context); ok {
+			return shutdownCtx
+		}
+	}
+	return context.Background()
+}
+
+// IsShuttingDown returns true if the app is shutting down
+func (c *Context) IsShuttingDown() bool {
+	select {
+	case <-c.ShutdownContext().Done():
+		return true
+	default:
+		return false
+	}
+}
+
+// WithTimeout creates a context with timeout that respects shutdown
+func (c *Context) WithTimeout(timeout time.Duration) (context.Context, context.CancelFunc) {
+	return context.WithTimeout(c.ShutdownContext(), timeout)
+}
+
+// WithDeadline creates a context with deadline that respects shutdown
+func (c *Context) WithDeadline(deadline time.Time) (context.Context, context.CancelFunc) {
+	return context.WithDeadline(c.ShutdownContext(), deadline)
+}
+
+// IsHTTP2 returns true if the request is using HTTP/2
+func (c *Context) IsHTTP2() bool {
+	if enabled := c.Locals("http2_enabled"); enabled != nil {
+		if enabled, ok := enabled.(bool); ok {
+			return enabled
+		}
+	}
+	return false
+}
+
+// Protocol returns the protocol version (HTTP/1.1 or HTTP/2.0)
+func (c *Context) Protocol() string {
+	if protocol := c.Locals("protocol"); protocol != nil {
+		if protocol, ok := protocol.(string); ok {
+			return protocol
+		}
+	}
+	return "HTTP/1.1"
+}
+
+// StreamID returns the HTTP/2 stream ID (if applicable)
+func (c *Context) StreamID() uint32 {
+	if c.IsHTTP2() {
+		return uint32(c.RequestCtx.ID())
+	}
+	return 0
+}
+
+// ServerPush pushes a resource to the client (HTTP/2 only)
+func (c *Context) ServerPush(path, contentType string) error {
+	if !c.IsHTTP2() {
+		return fmt.Errorf("server push is only supported in HTTP/2")
+	}
+
+	// Add Link header for server push
+	linkHeader := fmt.Sprintf("<%s>; rel=preload; as=%s", path, contentType)
+	c.SetHeader("Link", linkHeader)
+
+	return nil
+}
+
+// PushResources pushes multiple resources (HTTP/2 only)
+func (c *Context) PushResources(resources map[string]string) error {
+	if !c.IsHTTP2() {
+		return fmt.Errorf("server push is only supported in HTTP/2")
+	}
+
+	for path, contentType := range resources {
+		if err := c.ServerPush(path, contentType); err != nil {
+			return err
+		}
+	}
+
+	return nil
 }

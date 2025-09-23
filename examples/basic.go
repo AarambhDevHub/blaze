@@ -3,10 +3,6 @@
 package main
 
 import (
-	"log"
-	"os"
-	"os/signal"
-	"syscall"
 	"time"
 
 	"github.com/AarambhDevHub/blaze/pkg/blaze"
@@ -33,21 +29,8 @@ func main() {
 	// Routes
 	setupRoutes(app)
 
-	// Graceful shutdown
-	go func() {
-		sigChan := make(chan os.Signal, 1)
-		signal.Notify(sigChan, syscall.SIGINT, syscall.SIGTERM)
-		<-sigChan
-
-		log.Println("Shutting down server...")
-		if err := app.Shutdown(); err != nil {
-			log.Printf("Error during shutdown: %v", err)
-		}
-		os.Exit(0)
-	}()
-
 	// Start server
-	app.Listen()
+	app.ListenWithGracefulShutdown()
 }
 
 func setupRoutes(app *blaze.App) {
