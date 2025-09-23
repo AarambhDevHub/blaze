@@ -164,5 +164,5 @@ func main() {
 	})
 
 	log.Printf("🚀 Chat server starting on http://localhost:8080")
-	log.Fatal(app.Listen())
+	log.Fatal(app.ListenAndServe())
 }

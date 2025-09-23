@@ -17,6 +17,8 @@ func main() {
 		WriteTimeout:       15 * time.Second,
 		MaxRequestBodySize: 10 * 1024 * 1024, // 10MB
 		Concurrency:        512 * 1024,
+		EnableHTTP2:        false,
+		EnableTLS:          false,
 	}
 
 	app := blaze.NewWithConfig(config)
@@ -30,7 +32,7 @@ func main() {
 	setupRoutes(app)
 
 	// Start server
-	app.ListenWithGracefulShutdown()
+	app.ListenAndServe()
 }
 
 func setupRoutes(app *blaze.App) {

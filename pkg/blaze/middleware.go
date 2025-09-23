@@ -198,24 +198,6 @@ func HTTP2Info() MiddlewareFunc {
 	}
 }
 
-// ServerPush middleware for HTTP/2 server push functionality
-func ServerPush(resources map[string]string) MiddlewareFunc {
-	return func(next HandlerFunc) HandlerFunc {
-		return func(c *Context) error {
-			// Check if HTTP/2 is enabled and server push is supported
-			if c.Locals("http2_enabled").(bool) {
-				// Add server push resources
-				for resource, contentType := range resources {
-					pushHeader := fmt.Sprintf("<%s>; rel=preload; as=%s", resource, contentType)
-					c.SetHeader("Link", pushHeader)
-				}
-			}
-
-			return next(c)
-		}
-	}
-}
-
 // HTTP2Security middleware adds HTTP/2 specific security headers
 func HTTP2Security() MiddlewareFunc {
 	return func(next HandlerFunc) HandlerFunc {
