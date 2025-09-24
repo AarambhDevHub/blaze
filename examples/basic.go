@@ -26,7 +26,13 @@ func main() {
 	// Global middleware
 	app.Use(blaze.Recovery())
 	// app.Use(blaze.Logger())
-	app.Use(blaze.CORS("http://localhost:3000", "https://yourdomain.com"))
+	app.Use(blaze.CORS(blaze.CORSOptions{
+		AllowedOrigins:   []string{"http://localhost:3000", "https://yourdomain.com"},
+		AllowedMethods:   []string{"GET", "POST", "OPTIONS"},
+		AllowedHeaders:   []string{"Content-Type", "Authorization"},
+		AllowCredentials: true,
+		MaxAge:           3600,
+	}))
 
 	// Routes
 	setupRoutes(app)

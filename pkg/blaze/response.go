@@ -59,6 +59,12 @@ func InternalServerError(c *Context, message string) error {
 	return c.Status(500).JSON(Error(message))
 }
 
+// Redirect function sends an HTTP redirect to the given URL with the specified status code
+func Redirect(c Context, url string, statusCode int) error {
+	c.SetHeader("Location", url)
+	return c.Status(statusCode).Text("") // empty body is common for redirects
+}
+
 // PaginatedResponse represents a paginated response
 type PaginatedResponse struct {
 	Data       interface{} `json:"data"`
