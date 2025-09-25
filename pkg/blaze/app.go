@@ -1,3 +1,30 @@
+// Package blaze provides a lightweight, high-performance web framework for Go inspired by Axum and Actix Web.
+//
+// Blaze offers a modern, fast, and feature-rich web framework that includes built-in support for:
+// - HTTP/1.1 and HTTP/2 protocols
+// - TLS/SSL with automatic certificate generation
+// - WebSocket connections
+// - Middleware pipeline
+// - Advanced routing with parameters
+// - Graceful shutdown
+// - Request ID tracking
+// - Performance optimizations
+//
+// Example Usage:
+//
+//	app := blaze.New()
+//
+//	// Add middleware
+//	app.Use(blaze.Logger())
+//	app.Use(blaze.Recovery())
+//
+//	// Define routes
+//	app.GET("/", func(c blaze.Context) error {
+//	    return c.JSON(blaze.Map{"message": "Hello, Blaze!"})
+//	})
+//
+//	// Start server
+//	log.Fatal(app.ListenAndServe())
 package blaze
 
 import (
@@ -13,45 +40,87 @@ import (
 	"github.com/valyala/fasthttp"
 )
 
-// App represents the main application instance
+// App represents the main application instance that serves as the core of the Blaze web framework.
+// It encapsulates the HTTP server, routing, middleware, and configuration management.
+//
+// The App struct provides methods for:
+// - Route registration (GET, POST, PUT, DELETE, etc.)
+// - Middleware management
+// - Server configuration (TLS, HTTP/2, graceful shutdown)
+// - WebSocket upgrade handling
+// - Route grouping with shared prefixes and middleware
+//
+// Thread Safety: App is designed to be thread-safe for concurrent operations
+// during the setup phase, but should not be modified after starting the server.
 type App struct {
-	router      *Router
-	middleware  []MiddlewareFunc
-	server      *fasthttp.Server
-	config      *Config
-	tlsConfig   *TLSConfig
-	http2Config *HTTP2Config
-	http2Server *HTTP2Server
+	router      *Router          // HTTP router for handling request routing and parameter extraction
+	middleware  []MiddlewareFunc // Global middleware stack applied to all requests in reverse order
+	server      *fasthttp.Server // Underlying FastHTTP server instance for HTTP/1.1
+	config      *Config          // Application configuration including ports, timeouts, and feature flags
+	tlsConfig   *TLSConfig       // TLS/SSL configuration for HTTPS support
+	http2Config *HTTP2Config     // HTTP/2 protocol configuration
+	http2Server *HTTP2Server     // HTTP/2 server instance when HTTP/2 is enabled
 
-	// Graceful shutdown fields
-	shutdownCtx    context.Context
-	shutdownCancel context.CancelFunc
-	shutdownWg     sync.WaitGroup
-	shutdownOnce   sync.Once
-	isShuttingDown bool
-	mu             sync.RWMutex
+	// Graceful shutdown management
+	shutdownCtx    context.Context    // Context for coordinating graceful shutdown across components
+	shutdownCancel context.CancelFunc // Function to trigger shutdown signal to all components
+	shutdownWg     sync.WaitGroup     // WaitGroup to ensure all graceful tasks complete before shutdown
+	shutdownOnce   sync.Once          // Ensures shutdown logic executes only once
+	isShuttingDown bool               // Atomic flag indicating if server is in shutdown process
+	mu             sync.RWMutex       // Protects concurrent access to shutdown state
 }
 
-// Config holds application configuration
+// Config holds comprehensive application configuration for server behavior,
+// performance tuning, and feature enablement.
+//
+// Performance Settings:
+// - ReadTimeout/WriteTimeout: Prevent slow-loris attacks and resource exhaustion
+// - MaxRequestBodySize: Limits request payload size (default 4MB)
+// - Concurrency: Controls FastHTTP worker goroutines (default 256*1024)
+//
+// Protocol Settings:
+// - EnableHTTP2: Enables HTTP/2 multiplexing and server push
+// - EnableTLS: Activates HTTPS with configurable cipher suites
+// - RedirectHTTPToTLS: Automatically redirects HTTP traffic to HTTPS
+//
+// Development vs Production:
+// - Development mode enables debug features and relaxed security
+// - Production mode enforces strict security and optimal performance
 type Config struct {
-	Host               string
-	Port               int
-	TLSPort            int // Separate port for HTTPS
-	ReadTimeout        time.Duration
-	WriteTimeout       time.Duration
-	MaxRequestBodySize int
-	Concurrency        int
+	Host string // Bind address for the server (0.0.0.0 for all interfaces, 127.0.0.1 for localhost)
+	Port int    // HTTP port (typically 80 for production, 8080 for development)
 
-	// Protocol configuration
-	EnableHTTP2       bool
-	EnableTLS         bool
-	RedirectHTTPToTLS bool
+	// TLS Configuration
+	TLSPort int // HTTPS port (typically 443 for production, 8443 for development)
 
-	// Development settings
-	Development bool
+	// Timeout Configuration - Critical for preventing resource exhaustion
+	ReadTimeout  time.Duration // Maximum time to read entire request including body
+	WriteTimeout time.Duration // Maximum time to write response
+
+	// Resource Limits
+	MaxRequestBodySize int // Maximum size in bytes for request body (prevents memory exhaustion)
+	Concurrency        int // Maximum number of concurrent connections (FastHTTP worker pool size)
+
+	// Protocol Configuration
+	EnableHTTP2       bool // Enable HTTP/2 support with multiplexing and server push
+	EnableTLS         bool // Enable TLS/HTTPS support
+	RedirectHTTPToTLS bool // Automatically redirect HTTP requests to HTTPS
+
+	// Development Settings
+	Development bool // Enable development mode (relaxed security, debug features)
 }
 
-// DefaultConfig returns default configuration
+// DefaultConfig returns a secure, production-ready configuration with sensible defaults.
+//
+// Default Values:
+// - Host: 127.0.0.1 (localhost only for security)
+// - Port: 8080 (non-privileged port)
+// - Timeouts: 10s read/write (prevents slow clients from exhausting resources)
+// - Body Size: 4MB limit (balances functionality and security)
+// - Concurrency: 256K connections (high-performance default)
+// - Protocols: HTTP/1.1 only (maximum compatibility)
+//
+// Use this as a starting point and modify as needed for your environment.
 func DefaultConfig() *Config {
 	return &Config{
 		Host:               "127.0.0.1",
@@ -68,7 +137,21 @@ func DefaultConfig() *Config {
 	}
 }
 
-// ProductionConfig returns production-ready configuration
+// ProductionConfig returns a configuration optimized for production deployment.
+//
+// Production Features:
+// - Binds to all interfaces (0.0.0.0) for external access
+// - Uses standard HTTP/HTTPS ports (80/443)
+// - Enables HTTP/2 for improved performance
+// - Enables TLS with automatic HTTP->HTTPS redirection
+// - Longer timeouts for real-world network conditions
+// - Larger request body limit for file uploads
+// - Maximum concurrency for high-load scenarios
+//
+// Security Considerations:
+// - Always use with proper TLS certificates in production
+// - Configure firewall rules to protect the server
+// - Monitor resource usage and adjust limits as needed
 func ProductionConfig() *Config {
 	return &Config{
 		Host:               "0.0.0.0",
@@ -85,7 +168,17 @@ func ProductionConfig() *Config {
 	}
 }
 
-// DevelopmentConfig returns development configuration
+// DevelopmentConfig returns a configuration optimized for local development.
+//
+// Development Features:
+// - Localhost binding for security during development
+// - Non-standard ports to avoid conflicts
+// - Relaxed timeouts for debugging
+// - HTTP/1.1 only for simplicity
+// - No TLS by default (can be enabled separately)
+// - Development mode enables debug features
+//
+// This configuration is ideal for local development, testing, and debugging.
 func DevelopmentConfig() *Config {
 	return &Config{
 		Host:               "127.0.0.1",
@@ -102,7 +195,21 @@ func DevelopmentConfig() *Config {
 	}
 }
 
-// New creates a new Blaze application
+// New creates a new Blaze application with default configuration.
+//
+// The application is initialized with:
+// - Empty middleware stack (add middleware with Use())
+// - New router instance with trie-based path matching
+// - Default configuration (localhost:8080, HTTP/1.1)
+// - Graceful shutdown context for coordinating shutdown
+//
+// Example:
+//
+//	app := blaze.New()
+//	app.GET("/", handler)
+//	log.Fatal(app.ListenAndServe())
+//
+// For custom configuration, use NewWithConfig() instead.
 func New() *App {
 	ctx, cancel := context.WithCancel(context.Background())
 
@@ -115,7 +222,24 @@ func New() *App {
 	}
 }
 
-// NewWithConfig creates a new Blaze application with custom configuration
+// NewWithConfig creates a new Blaze application with custom configuration.
+//
+// This allows fine-tuning of server behavior, performance characteristics,
+// and protocol support from initialization.
+//
+// Configuration is applied immediately and affects:
+// - Server binding and ports
+// - Protocol support (HTTP/2, TLS)
+// - Performance limits and timeouts
+// - Development vs production behavior
+//
+// Example:
+//
+//	config := blaze.ProductionConfig()
+//	config.Port = 8080
+//	app := blaze.NewWithConfig(config)
+//
+// TLS and HTTP/2 servers are automatically configured based on config flags.
 func NewWithConfig(config *Config) *App {
 	ctx, cancel := context.WithCancel(context.Background())
 	app := &App{
@@ -147,7 +271,26 @@ func NewWithConfig(config *Config) *App {
 	return app
 }
 
-// SetTLSConfig sets the TLS configuration
+// SetTLSConfig applies a custom TLS configuration to the application.
+//
+// This method allows fine-tuning of TLS behavior including:
+// - Certificate and key management
+// - Cipher suite selection
+// - Protocol version limits
+// - Client certificate authentication
+// - OCSP stapling and other advanced features
+//
+// The TLS configuration affects both HTTP/1.1 and HTTP/2 servers.
+// If HTTP/2 is enabled, the HTTP/2 server is automatically updated.
+//
+// Example:
+//
+//	tlsConfig := blaze.DefaultTLSConfig()
+//	tlsConfig.CertFile = "/path/to/cert.pem"
+//	tlsConfig.KeyFile = "/path/to/key.pem"
+//	app.SetTLSConfig(tlsConfig)
+//
+// Returns the app instance for method chaining.
 func (a *App) SetTLSConfig(config *TLSConfig) *App {
 	a.tlsConfig = config
 	a.config.EnableTLS = config != nil
@@ -160,7 +303,26 @@ func (a *App) SetTLSConfig(config *TLSConfig) *App {
 	return a
 }
 
-// SetHTTP2Config sets the HTTP/2 configuration
+// SetHTTP2Config applies a custom HTTP/2 configuration to the application.
+//
+// HTTP/2 configuration controls:
+// - Stream concurrency limits (prevents resource exhaustion)
+// - Upload buffer sizes (balances memory usage and performance)
+// - Server push capabilities (for performance optimization)
+// - H2C support (HTTP/2 over cleartext for development)
+// - Frame size limits (affects streaming performance)
+//
+// When HTTP/2 is enabled, a new HTTP/2 server instance is created
+// with the updated configuration.
+//
+// Example:
+//
+//	http2Config := blaze.DefaultHTTP2Config()
+//	http2Config.MaxConcurrentStreams = 500
+//	http2Config.EnablePush = true
+//	app.SetHTTP2Config(http2Config)
+//
+// Returns the app instance for method chaining.
 func (a *App) SetHTTP2Config(config *HTTP2Config) *App {
 	a.http2Config = config
 	a.config.EnableHTTP2 = config != nil && config.Enabled
@@ -173,7 +335,28 @@ func (a *App) SetHTTP2Config(config *HTTP2Config) *App {
 	return a
 }
 
-// EnableAutoTLS enables automatic TLS with self-signed certificates for development
+// EnableAutoTLS enables automatic TLS with self-signed certificates for development.
+//
+// This is a convenience method that:
+// - Generates self-signed certificates for specified domains
+// - Configures TLS with development-friendly settings
+// - Enables HTTPS on the configured TLS port
+//
+// The generated certificates are cached in the .certs directory and
+// reused across application restarts until they expire.
+//
+// WARNING: Self-signed certificates should NEVER be used in production.
+// Browsers will show security warnings, and the connection is not truly secure.
+//
+// Parameters:
+//
+//	domains: List of domains/IPs for the certificate (default: localhost, 127.0.0.1)
+//
+// Example:
+//
+//	app.EnableAutoTLS("localhost", "127.0.0.1", "::1")
+//
+// Returns the app instance for method chaining.
 func (a *App) EnableAutoTLS(domains ...string) *App {
 	if len(domains) == 0 {
 		domains = []string{"localhost", "127.0.0.1"}
@@ -185,7 +368,28 @@ func (a *App) EnableAutoTLS(domains ...string) *App {
 	return a.SetTLSConfig(tlsConfig)
 }
 
-// IsShuttingDown returns true if the app is in shutdown process
+// IsShuttingDown returns true if the application is in the graceful shutdown process.
+//
+// This method is thread-safe and can be called from middleware, handlers,
+// or background tasks to determine if they should terminate early.
+//
+// During shutdown:
+// - New requests receive 503 Service Unavailable responses
+// - Existing requests are allowed to complete (with timeout)
+// - Background tasks should check this flag and exit gracefully
+//
+// Example usage in a long-running handler:
+//
+//	func handler(c blaze.Context) error {
+//	    for i := 0; i < 1000; i++ {
+//	        if c.App.IsShuttingDown() {
+//	            return c.Status(503).Text("Server shutting down")
+//	        }
+//	        // Do work...
+//	        time.Sleep(time.Millisecond)
+//	    }
+//	    return c.Text("Complete")
+//	}
 func (a *App) IsShuttingDown() bool {
 	a.mu.RLock()
 	defer a.mu.RUnlock()
@@ -199,12 +403,60 @@ func (a *App) setShuttingDown(state bool) {
 	a.isShuttingDown = state
 }
 
-// GetShutdownContext returns the shutdown context
+// GetShutdownContext returns the application's shutdown context.
+//
+// This context is cancelled when graceful shutdown begins, allowing
+// background tasks, middleware, and handlers to react appropriately.
+//
+// The shutdown context can be used to:
+// - Cancel long-running operations during shutdown
+// - Implement cleanup logic in background goroutines
+// - Coordinate shutdown across application components
+//
+// Example:
+//
+//	go func() {
+//	    ticker := time.NewTicker(1 * time.Second)
+//	    defer ticker.Stop()
+//
+//	    for {
+//	        select {
+//	        case <-app.GetShutdownContext().Done():
+//	            log.Println("Background task shutting down")
+//	            return
+//	        case <-ticker.C:
+//	            // Do periodic work
+//	        }
+//	    }
+//	}()
 func (a *App) GetShutdownContext() context.Context {
 	return a.shutdownCtx
 }
 
-// RegisterGracefulTask registers a task for graceful shutdown
+// RegisterGracefulTask registers a cleanup task to run during graceful shutdown.
+//
+// Tasks are executed concurrently when shutdown begins, allowing the application
+// to clean up resources, save state, or notify external systems.
+//
+// Each task receives a context with a 30-second timeout. Tasks should:
+// - Monitor the context for cancellation
+// - Perform cleanup operations quickly
+// - Return gracefully if the timeout is reached
+//
+// Tasks are executed in separate goroutines, so they can run concurrently
+// without blocking each other.
+//
+// Example:
+//
+//	app.RegisterGracefulTask(func(ctx context.Context) error {
+//	    log.Println("Closing database connections...")
+//	    return db.Close()
+//	})
+//
+//	app.RegisterGracefulTask(func(ctx context.Context) error {
+//	    log.Println("Flushing metrics...")
+//	    return metrics.Flush(ctx)
+//	})
 func (a *App) RegisterGracefulTask(task func(ctx context.Context) error) {
 	a.shutdownWg.Add(1)
 	go func() {
@@ -220,7 +472,36 @@ func (a *App) RegisterGracefulTask(task func(ctx context.Context) error) {
 	}()
 }
 
-// Shutdown gracefully shuts down the server
+// Shutdown gracefully shuts down the server with a configurable timeout.
+//
+// The graceful shutdown process follows these steps:
+// 1. Mark the application as shutting down (new requests get 503)
+// 2. Cancel the shutdown context to notify all components
+// 3. Wait for all registered graceful tasks to complete
+// 4. Shutdown HTTP/2 server if enabled
+// 5. Shutdown HTTP/1.1 server
+// 6. Force shutdown if timeout is exceeded
+//
+// The shutdown process respects the provided context timeout. If graceful
+// shutdown cannot complete within the timeout, a force shutdown is performed.
+//
+// Parameters:
+//
+//	ctx: Context with timeout for the shutdown process
+//
+// Returns:
+//
+//	error: Any error that occurred during shutdown
+//
+// Example:
+//
+//	// Shutdown with 30-second timeout
+//	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+//	defer cancel()
+//
+//	if err := app.Shutdown(ctx); err != nil {
+//	    log.Printf("Shutdown error: %v", err)
+//	}
 func (a *App) Shutdown(ctx context.Context) error {
 	var shutdownErr error
 
@@ -283,7 +564,33 @@ func (a *App) Shutdown(ctx context.Context) error {
 	return shutdownErr
 }
 
-// startHTTPRedirectServer starts a server to redirect HTTP to HTTPS
+// ListenAndServe starts the appropriate server based on configuration.
+//
+// This method analyzes the application configuration and starts the correct
+// combination of servers:
+//
+// Server Selection Logic:
+// 1. HTTP/2 + TLS: Starts HTTP/2 server with TLS on TLS port
+// 2. HTTP/2 + H2C: Starts HTTP/2 server with cleartext on HTTP port
+// 3. HTTP/1.1 + TLS: Starts FastHTTP server with TLS on TLS port
+// 4. HTTP/1.1: Starts FastHTTP server on HTTP port
+//
+// Additional Features:
+// - Automatic HTTP->HTTPS redirect server when configured
+// - Proper TLS configuration with FastHTTP integration
+// - Comprehensive error handling and logging
+// - Support for both production and development scenarios
+//
+// The server blocks until an error occurs or shutdown is initiated.
+//
+// Returns:
+//
+//	error: Server startup or runtime error
+//
+// Example:
+//
+//	// Start server with current configuration
+//	log.Fatal(app.ListenAndServe())
 func (a *App) startHTTPRedirectServer() {
 	if !a.config.RedirectHTTPToTLS || !a.config.EnableTLS {
 		return
@@ -363,7 +670,42 @@ func (a *App) ListenAndServe() error {
 	}
 }
 
-// ListenAndServeGraceful starts the server with automatic graceful shutdown handling
+// ListenAndServeGraceful starts the server with automatic graceful shutdown handling.
+//
+// This method combines server startup with signal handling for graceful shutdown.
+// It listens for OS signals (SIGINT, SIGTERM by default) and automatically
+// initiates graceful shutdown when received.
+//
+// Features:
+// - Automatic signal handling (Ctrl+C, system shutdown)
+// - Configurable shutdown timeout (default 30 seconds)
+// - Comprehensive error handling for both startup and shutdown
+// - Supports custom signal handling
+//
+// The method blocks until:
+// 1. Server startup fails (returns startup error)
+// 2. Shutdown signal received (performs graceful shutdown)
+// 3. Server runtime error (returns runtime error)
+//
+// Parameters:
+//
+//	signals: Optional list of OS signals to handle (default: SIGINT, SIGTERM)
+//
+// Returns:
+//
+//	error: Server startup, runtime, or shutdown error
+//
+// Example:
+//
+//	// Start with default signals (SIGINT, SIGTERM)
+//	if err := app.ListenAndServeGraceful(); err != nil {
+//	    log.Printf("Server error: %v", err)
+//	}
+//
+//	// Start with custom signals
+//	if err := app.ListenAndServeGraceful(syscall.SIGUSR1); err != nil {
+//	    log.Printf("Server error: %v", err)
+//	}
 func (a *App) ListenAndServeGraceful(signals ...os.Signal) error {
 	// Default signals if none provided
 	if len(signals) == 0 {
@@ -401,55 +743,233 @@ func (a *App) ListenAndServeGraceful(signals ...os.Signal) error {
 	return a.Shutdown(shutdownCtx)
 }
 
-// Use adds middleware to the application
+// Use adds middleware to the application's global middleware stack.
+//
+// Middleware is executed in the order it's added (first added = first executed).
+// However, the middleware stack is built in reverse order, so the last added
+// middleware wraps the first added middleware.
+//
+// Middleware execution flow:
+//
+//	Request -> Middleware N -> ... -> Middleware 2 -> Middleware 1 -> Handler
+//	Response <- Middleware N <- ... <- Middleware 2 <- Middleware 1 <- Handler
+//
+// Common middleware types:
+// - Logger: Request/response logging
+// - Recovery: Panic recovery and error handling
+// - CORS: Cross-origin resource sharing
+// - Authentication: Bearer token validation
+// - Rate Limiting: Request throttling
+// - Compression: Response compression
+//
+// Parameters:
+//
+//	middleware: Function that wraps the next handler in the chain
+//
+// Returns:
+//
+//	*App: The app instance for method chaining
+//
+// Example:
+//
+//	app.Use(blaze.Logger()).
+//	    Use(blaze.Recovery()).
+//	    Use(blaze.CORS()).
+//	    Use(customMiddleware)
 func (a *App) Use(middleware MiddlewareFunc) *App {
 	a.middleware = append(a.middleware, middleware)
 	return a
 }
 
-// GET registers a GET route
+// GET registers a GET route for retrieving resources.
+//
+// GET requests should be:
+// - Idempotent (multiple calls have the same effect)
+// - Cacheable (can be cached by browsers and proxies)
+// - Safe (no side effects on server state)
+//
+// Common use cases:
+// - Retrieving data: "/api/users/:id"
+// - Listing resources: "/api/users"
+// - Health checks: "/health"
+// - Static files: "/assets/*filepath"
+//
+// Parameters:
+//
+//	path: URL pattern with optional parameters
+//	handler: Function to process the GET request
+//	options: Optional route configuration
+//
+// Returns:
+//
+//	*App: The app instance for method chaining
+//
+// Example:
+//
+//	// Simple GET route
+//	app.GET("/", func(c blaze.Context) error {
+//	    return c.JSON(blaze.Map{"message": "Hello World"})
+//	})
+//
+//	// GET route with parameters
+//	app.GET("/users/:id", func(c blaze.Context) error {
+//	    userID := c.Param("id")
+//	    return c.JSON(blaze.Map{"user_id": userID})
+//	})
 func (a *App) GET(path string, handler HandlerFunc, options ...RouteOption) *App {
 	a.router.AddRoute("GET", path, handler, options...)
 	return a
 }
 
-// POST registers a POST route
+// POST registers a POST route for creating new resources.
+//
+// POST requests are typically used for:
+// - Creating new resources: "/api/users"
+// - Submitting forms: "/contact"
+// - Uploading files: "/api/upload"
+// - Non-idempotent operations: "/api/send-email"
+//
+// POST requests:
+// - Can modify server state
+// - Are not cacheable by default
+// - Can include request body (JSON, form data, files)
+// - Should return appropriate status codes (201 for creation)
+//
+// Parameters:
+//
+//	path: URL pattern with optional parameters
+//	handler: Function to process the POST request
+//	options: Optional route configuration
+//
+// Returns:
+//
+//	*App: The app instance for method chaining
 func (a *App) POST(path string, handler HandlerFunc, options ...RouteOption) *App {
 	a.router.AddRoute("POST", path, handler, options...)
 	return a
 }
 
-// PUT registers a PUT route
+// PUT registers a PUT route for updating/replacing entire resources.
+//
+// PUT requests are typically used for:
+// - Replacing entire resources: "/api/users/:id"
+// - Idempotent updates (same effect when repeated)
+// - Creating resources with known IDs: "/api/users/123"
+//
+// PUT semantics:
+// - Should replace the entire resource
+// - Idempotent (multiple calls have same effect)
+// - Can create or update resources
+// - Request body should contain complete resource representation
 func (a *App) PUT(path string, handler HandlerFunc, options ...RouteOption) *App {
 	a.router.AddRoute("PUT", path, handler, options...)
 	return a
 }
 
-// DELETE registers a DELETE route
+// DELETE registers a DELETE route for removing resources.
+//
+// DELETE requests are typically used for:
+// - Removing specific resources: "/api/users/:id"
+// - Bulk deletion: "/api/users" (with query parameters)
+// - Cleanup operations: "/api/cache/clear"
+//
+// DELETE semantics:
+// - Idempotent (deleting non-existent resource is not an error)
+// - Should return appropriate status codes (204 for success, 404 for not found)
+// - May include request body for bulk operations
 func (a *App) DELETE(path string, handler HandlerFunc, options ...RouteOption) *App {
 	a.router.AddRoute("DELETE", path, handler, options...)
 	return a
 }
 
-// PATCH registers a PATCH route
+// PATCH registers a PATCH route for partial resource updates.
+//
+// PATCH requests are typically used for:
+// - Partial updates: "/api/users/:id"
+// - Field-specific modifications: "/api/users/:id/email"
+// - Status changes: "/api/orders/:id/status"
+//
+// PATCH semantics:
+// - Applies partial modifications to resources
+// - Request body contains only fields to be updated
+// - More efficient than PUT for large resources
+// - Should validate that partial update is valid
 func (a *App) PATCH(path string, handler HandlerFunc, options ...RouteOption) *App {
 	a.router.AddRoute("PATCH", path, handler, options...)
 	return a
 }
 
-// OPTIONS registers an OPTIONS route
+// OPTIONS registers an OPTIONS route for CORS preflight requests and API discovery.
+//
+// OPTIONS requests are typically used for:
+// - CORS preflight requests (automatic browser behavior)
+// - API capability discovery: "What methods are supported?"
+// - Server feature detection
+//
+// OPTIONS responses should include:
+// - Allow header with supported methods
+// - CORS headers for cross-origin requests
+// - API documentation or capabilities
 func (a *App) OPTIONS(path string, handler HandlerFunc, options ...RouteOption) *App {
 	a.router.AddRoute("OPTIONS", path, handler, options...)
 	return a
 }
 
-// HEAD registers a HEAD route
+// HEAD registers a HEAD route for retrieving resource metadata without body.
+//
+// HEAD requests are typically used for:
+// - Checking resource existence without downloading content
+// - Getting response headers (Content-Length, Last-Modified, etc.)
+// - Conditional requests (If-Modified-Since validation)
+// - Bandwidth-efficient resource inspection
+//
+// HEAD responses:
+// - Should include same headers as corresponding GET request
+// - Must not include response body
+// - Should be as efficient as possible (avoid expensive operations)
 func (a *App) HEAD(path string, handler HandlerFunc, options ...RouteOption) *App {
 	a.router.AddRoute("HEAD", path, handler, options...)
 	return a
 }
 
-// WebSocket upgrades HTTP connection to WebSocket
+// WebSocket upgrades HTTP connection to WebSocket with default configuration.
+//
+// WebSocket connections enable real-time, bidirectional communication between
+// client and server. Common use cases include:
+// - Real-time chat applications
+// - Live data feeds (stock prices, sports scores)
+// - Collaborative editing (like Google Docs)
+// - Gaming applications
+// - IoT device communication
+//
+// The WebSocket handler receives a WebSocketConnection that provides methods
+// for reading and writing messages in both text and binary formats.
+//
+// Parameters:
+//
+//	path: URL pattern for the WebSocket endpoint
+//	handler: Function to handle WebSocket connections
+//	options: Optional route configuration
+//
+// Returns:
+//
+//	*App: The app instance for method chaining
+//
+// Example:
+//
+//	app.WebSocket("/ws", func(conn blaze.WebSocketConnection) error {
+//	    for {
+//	        msgType, data, err := conn.ReadMessage()
+//	        if err != nil {
+//	            return err
+//	        }
+//
+//	        // Echo message back to client
+//	        if err := conn.WriteMessage(msgType, data); err != nil {
+//	            return err
+//	        }
+//	    }
+//	})
 func (a *App) WebSocket(path string, handler WebSocketHandler, options ...RouteOption) *App {
 	upgrader := NewWebSocketUpgrader()
 
@@ -461,7 +981,35 @@ func (a *App) WebSocket(path string, handler WebSocketHandler, options ...RouteO
 	return a
 }
 
-// WebSocketWithConfig upgrades HTTP connection to WebSocket with custom config
+// WebSocketWithConfig upgrades HTTP connection to WebSocket with custom configuration.
+//
+// This method allows fine-tuning of WebSocket behavior including:
+// - Message size limits
+// - Compression settings
+// - Subprotocol negotiation
+// - Origin validation
+// - Custom upgrade headers
+//
+// Parameters:
+//
+//	path: URL pattern for the WebSocket endpoint
+//	handler: Function to handle WebSocket connections
+//	config: Custom WebSocket configuration
+//	options: Optional route configuration
+//
+// Returns:
+//
+//	*App: The app instance for method chaining
+//
+// Example:
+//
+//	wsConfig := blaze.WebSocketConfig{
+//	    MaxMessageSize: 1024 * 1024, // 1MB
+//	    EnableCompression: true,
+//	    Subprotocols: []string{"chat", "echo"},
+//	}
+//
+//	app.WebSocketWithConfig("/ws", handler, wsConfig)
 func (a *App) WebSocketWithConfig(path string, handler WebSocketHandler, config *WebSocketConfig, options ...RouteOption) *App {
 	upgrader := NewWebSocketUpgrader(config)
 
@@ -473,7 +1021,38 @@ func (a *App) WebSocketWithConfig(path string, handler WebSocketHandler, config 
 	return a
 }
 
-// Group creates a route group with shared prefix and middleware
+// Group creates a route group with shared prefix and middleware.
+//
+// Route groups allow organizing related routes under a common prefix
+// and applying shared middleware without affecting other routes.
+//
+// Features:
+// - Shared URL prefix for all routes in the group
+// - Group-specific middleware stack
+// - Nested groups (groups can contain other groups)
+// - Independent of global middleware
+//
+// Parameters:
+//
+//	prefix: URL prefix for all routes in this group
+//
+// Returns:
+//
+//	*Group: New route group instance
+//
+// Example:
+//
+//	// API v1 group with authentication
+//	v1 := app.Group("/api/v1")
+//	v1.Use(AuthMiddleware())
+//	v1.GET("/users", getUsersHandler)
+//	v1.POST("/users", createUserHandler)
+//
+//	// Admin group with additional authorization
+//	admin := v1.Group("/admin")
+//	admin.Use(AdminMiddleware())
+//	admin.GET("/stats", getStatsHandler)
+//	admin.DELETE("/users/:id", deleteUserHandler)
 func (a *App) Group(prefix string) *Group {
 	return &Group{
 		app:        a,

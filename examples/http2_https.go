@@ -36,7 +36,7 @@ func main() {
 	app.Use(blaze.IPMiddleware()) // Extract client IP information
 	app.Use(blaze.Logger())
 	app.Use(blaze.Recovery())
-	app.Use(blaze.CORS())
+	app.Use(blaze.CORS(blaze.DefaultCORSOptions()))
 
 	// Routes
 	app.GET("/", func(c *blaze.Context) error {

@@ -54,12 +54,12 @@ func setupRoutes(app *blaze.App) {
 				"docs":   "/docs",
 			},
 		})
-	})
+	}, blaze.WithMiddleware(blaze.Cache(blaze.ProductionCacheOptions())))
 
 	// Health check
 	app.GET("/health", func(c *blaze.Context) error {
 		return c.JSON(blaze.Health("1.0.0", "running"))
-	})
+	}, blaze.WithMiddleware(blaze.Cache(blaze.ProductionCacheOptions())))
 
 	// API routes
 	api := app.Group("/api/v1")

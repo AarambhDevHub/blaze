@@ -31,7 +31,7 @@ func main() {
 	app.Use(blaze.HTTP2Middleware())
 	app.Use(blaze.Logger())
 	app.Use(blaze.Recovery())
-	app.Use(blaze.CORS())
+	app.Use(blaze.CORS(blaze.DefaultCORSOptions()))
 	app.Use(blaze.IPMiddleware())
 
 	// Routes
