@@ -1,7 +1,7 @@
 package blaze
 
 const (
-	Version   = "1.0.0"
+	Version   = "0.1.2"
 	BuildDate = "2025-09-24"
 	GoVersion = "1.24.0"
 )

@@ -932,6 +932,78 @@ func (a *App) HEAD(path string, handler HandlerFunc, options ...RouteOption) *Ap
 	return a
 }
 
+// CONNECT registers a CONNECT route for establishing tunnels (e.g., HTTPS proxies).
+//
+// CONNECT requests are typically used for:
+// - Establishing tunnels through HTTP proxies
+// - Enabling HTTPS connections via proxy servers
+// - Creating secure connections for non-HTTP protocols
+//
+// CONNECT semantics:
+// - Request includes target host and port (e.g., "example.com:443")
+// - Server should establish a TCP tunnel to the target
+// - After successful connection, raw data is forwarded bidirectionally
+// - Should handle errors gracefully (e.g., connection failures)
+func (a *App) CONNECT(path string, handler HandlerFunc, options ...RouteOption) *App {
+	a.router.AddRoute("CONNECT", path, handler, options...)
+	return a
+}
+
+// TRACE registers a TRACE route for diagnostic purposes.
+//
+// TRACE requests are typically used for:
+// - Echoing received requests for debugging
+// - Diagnosing network issues
+// - Verifying request paths and headers
+//
+// TRACE semantics:
+// - Server should respond with the exact request received
+// - Response must include all request headers and body
+// - Should be used cautiously (can expose sensitive information)
+// - Often disabled in production environments for security
+func (a *App) TRACE(path string, handler HandlerFunc, options ...RouteOption) *App {
+	a.router.AddRoute("TRACE", path, handler, options...)
+	return a
+}
+
+// ANY registers a route for all standard HTTP methods.
+//
+// ANY is a convenience method that registers the same handler for:
+// - GET, POST, PUT, DELETE, PATCH, OPTIONS, HEAD, CONNECT, TRACE
+//
+// Use cases for ANY:
+// - Catch-all routes (e.g., 404 handlers)
+// - Proxying requests to another service
+// - Dynamic routing based on request content
+//
+// Note: Using ANY can make it harder to reason about route behavior.
+// Prefer specific methods when possible for clarity and intent.
+func (a *App) ANY(path string, handler HandlerFunc, options ...RouteOption) *App {
+	methods := []string{"GET", "POST", "PUT", "DELETE", "PATCH", "OPTIONS", "HEAD", "CONNECT", "TRACE"}
+	for _, method := range methods {
+		a.router.AddRoute(method, path, handler, options...)
+	}
+	return a
+}
+
+// Match registers a route for multiple specified HTTP methods.
+//
+// Match allows registering the same handler for a custom set of methods.
+// This is useful for:
+// - Grouping related methods (e.g., GET and HEAD)
+// - Implementing RESTful endpoints with multiple actions
+// - Reducing boilerplate when the same logic applies to several methods
+//
+// Parameters:
+//
+//	methods: List of HTTP methods to register (e.g., []string{"GET", "POST"})
+func (a *App) Match(methods []string, path string, handler HandlerFunc, options ...RouteOption) *App {
+	for _, method := range methods {
+		a.router.AddRoute(method, path, handler, options...)
+	}
+	return a
+}
+
 // WebSocket upgrades HTTP connection to WebSocket with default configuration.
 //
 // WebSocket connections enable real-time, bidirectional communication between
@@ -1053,13 +1125,28 @@ func (a *App) WebSocketWithConfig(path string, handler WebSocketHandler, config 
 //	admin.Use(AdminMiddleware())
 //	admin.GET("/stats", getStatsHandler)
 //	admin.DELETE("/users/:id", deleteUserHandler)
-func (a *App) Group(prefix string) *Group {
-	return &Group{
+func (a *App) Group(prefix string, configure ...func(*Group)) *Group {
+	group := &Group{
 		app:        a,
 		prefix:     prefix,
 		middleware: make([]MiddlewareFunc, 0),
 	}
+
+	// Apply configuration if provided
+	for _, cfg := range configure {
+		cfg(group)
+	}
+
+	return group
 }
+
+// func (a *App) Group(prefix string) *Group {
+// 	return &Group{
+// 		app:        a,
+// 		prefix:     prefix,
+// 		middleware: make([]MiddlewareFunc, 0),
+// 	}
+// }
 
 // handler is the main request handler that applies middleware and routing
 func (a *App) handler(ctx *fasthttp.RequestCtx) {
@@ -1155,12 +1242,33 @@ type Group struct {
 	app        *App
 	prefix     string
 	middleware []MiddlewareFunc
+	parent     *Group // For nested groups
 }
 
 // Use adds middleware to the group
 func (g *Group) Use(middleware MiddlewareFunc) *Group {
 	g.middleware = append(g.middleware, middleware)
 	return g
+}
+
+// Group creates a nested group
+func (g *Group) Group(prefix string, configure ...func(*Group)) *Group {
+	nestedGroup := &Group{
+		app:        g.app,
+		prefix:     g.prefix + prefix,
+		middleware: make([]MiddlewareFunc, len(g.middleware)),
+		parent:     g,
+	}
+
+	// Inherit parent middleware
+	copy(nestedGroup.middleware, g.middleware)
+
+	// Apply configuration if provided
+	for _, cfg := range configure {
+		cfg(nestedGroup)
+	}
+
+	return nestedGroup
 }
 
 // GET registers a GET route in the group
@@ -1203,6 +1311,42 @@ func (g *Group) PATCH(path string, handler HandlerFunc, options ...RouteOption) 
 	return g
 }
 
+// New HTTP methods for groups
+func (g *Group) CONNECT(path string, handler HandlerFunc, options ...RouteOption) *Group {
+	fullPath := g.prefix + path
+	wrappedHandler := g.wrapHandler(handler)
+	g.app.router.AddRoute("CONNECT", fullPath, wrappedHandler, options...)
+	return g
+}
+
+func (g *Group) TRACE(path string, handler HandlerFunc, options ...RouteOption) *Group {
+	fullPath := g.prefix + path
+	wrappedHandler := g.wrapHandler(handler)
+	g.app.router.AddRoute("TRACE", fullPath, wrappedHandler, options...)
+	return g
+}
+
+// ANY registers a route for all HTTP methods in the group
+func (g *Group) ANY(path string, handler HandlerFunc, options ...RouteOption) *Group {
+	methods := []string{"GET", "POST", "PUT", "DELETE", "PATCH", "OPTIONS", "HEAD", "CONNECT", "TRACE"}
+	fullPath := g.prefix + path
+	wrappedHandler := g.wrapHandler(handler)
+	for _, method := range methods {
+		g.app.router.AddRoute(method, fullPath, wrappedHandler, options...)
+	}
+	return g
+}
+
+// Match registers a route for specific HTTP methods in the group
+func (g *Group) Match(methods []string, path string, handler HandlerFunc, options ...RouteOption) *Group {
+	fullPath := g.prefix + path
+	wrappedHandler := g.wrapHandler(handler)
+	for _, method := range methods {
+		g.app.router.AddRoute(method, fullPath, wrappedHandler, options...)
+	}
+	return g
+}
+
 // WebSocket registers a WebSocket route in the group
 func (g *Group) WebSocket(path string, handler WebSocketHandler, options ...RouteOption) *Group {
 	fullPath := g.prefix + path
@@ -1237,4 +1381,22 @@ func (g *Group) wrapHandler(handler HandlerFunc) HandlerFunc {
 		handler = g.middleware[i](handler)
 	}
 	return handler
+}
+
+// GetAllMiddleware returns all middleware including inherited from parents
+func (g *Group) GetAllMiddleware() []MiddlewareFunc {
+	var allMiddleware []MiddlewareFunc
+
+	if g.parent != nil {
+		allMiddleware = append(allMiddleware, g.parent.GetAllMiddleware()...)
+	}
+
+	allMiddleware = append(allMiddleware, g.middleware...)
+	return allMiddleware
+}
+
+// Apply applies a configuration function to the group (for fluent API)
+func (g *Group) Apply(configure func(*Group)) *Group {
+	configure(g)
+	return g
 }

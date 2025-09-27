@@ -64,13 +64,13 @@ func setupRoutes(app *blaze.App) {
 	// API routes
 	api := app.Group("/api/v1")
 
+	items := api.Group("/items")
 	// Example CRUD endpoints
-	api.GET("/items", listItems)
-	api.POST("/items", createItem)
-	api.GET("/items/:id", getItem, blaze.WithIntConstraint("id"))
-	api.PUT("/items/:id", updateItem)
-	api.DELETE("/items/:id", deleteItem)
-
+	items.GET("", listItems)
+	items.POST("", createItem)
+	items.GET("/:id", getItem, blaze.WithIntConstraint("id"))
+	items.PUT("/:id", updateItem)
+	items.DELETE("/:id", deleteItem)
 	// File upload example
 	api.POST("/upload", uploadFile)
 

@@ -1,6 +1,7 @@
 package blaze
 
 import (
+	"fmt"
 	"regexp"
 	"strings"
 )
@@ -20,6 +21,8 @@ type RouterConfig struct {
 	UseEscapedPath         bool
 	HandleMethodNotAllowed bool
 	HandleOPTIONS          bool
+	EnableMerging          bool // New: Enable route merging
+	MaxMergeDepth          int  // New: Maximum depth for route merging
 }
 
 // DefaultRouterConfig returns default router configuration
@@ -31,6 +34,8 @@ func DefaultRouterConfig() RouterConfig {
 		UseEscapedPath:         false,
 		HandleMethodNotAllowed: true,
 		HandleOPTIONS:          true,
+		EnableMerging:          true,
+		MaxMergeDepth:          10,
 	}
 }
 
@@ -83,6 +88,16 @@ type Route struct {
 	Constraints map[string]*RouteConstraint
 	Name        string
 	Params      []string
+	Merged      []*Route // New: For merged routes
+	Priority    int      // New: Route priority
+	Tags        []string // New: Route tags for grouping
+}
+
+type RouteGroup struct {
+	Name        string
+	Description string
+	Routes      []*Route
+	Middleware  []MiddlewareFunc
 }
 
 // NewRouter creates a new  router
@@ -98,6 +113,218 @@ func NewRouter(config ...RouterConfig) *Router {
 		root:   &routeNode{},
 		routes: make(map[string]*Route),
 		config: cfg,
+	}
+}
+
+// MergeRoutes merges multiple routes with the same pattern
+func (r *Router) MergeRoutes(pattern string) error {
+	if !r.config.EnableMerging {
+		return fmt.Errorf("route merging is disabled")
+	}
+
+	var routesToMerge []*Route
+
+	// Find all routes with the same pattern
+	for key, route := range r.routes {
+		if strings.Contains(key, pattern) {
+			routesToMerge = append(routesToMerge, route)
+		}
+	}
+
+	if len(routesToMerge) <= 1 {
+		return fmt.Errorf("no routes to merge for pattern: %s", pattern)
+	}
+
+	// Create a master route
+	masterRoute := &Route{
+		Pattern:     pattern,
+		Merged:      routesToMerge,
+		Handler:     r.createMergedHandler(routesToMerge),
+		Middleware:  r.mergeMidlleware(routesToMerge),
+		Constraints: r.mergeConstraints(routesToMerge),
+		Priority:    r.calculateMergedPriority(routesToMerge),
+	}
+
+	// Update the routing tree
+	r.addToTree("*", pattern, masterRoute)
+
+	return nil
+}
+
+// createMergedHandler creates a handler that can handle multiple HTTP methods
+func (r *Router) createMergedHandler(routes []*Route) HandlerFunc {
+	methodMap := make(map[string]HandlerFunc)
+
+	for _, route := range routes {
+		methodMap[route.Method] = route.Handler
+	}
+
+	return func(c *Context) error {
+		method := c.Method()
+		if handler, exists := methodMap[method]; exists {
+			return handler(c)
+		}
+
+		// Method not allowed
+		return c.Status(405).JSON(Map{
+			"error":           "Method Not Allowed",
+			"allowed_methods": r.getAllowedMethods(routes),
+		})
+	}
+}
+
+// mergeMidlleware combines middleware from multiple routes
+func (r *Router) mergeMidlleware(routes []*Route) []MiddlewareFunc {
+	var merged []MiddlewareFunc
+	seen := make(map[string]bool)
+
+	for _, route := range routes {
+		for _, mw := range route.Middleware {
+			// Use a simple string representation to avoid duplicates
+			key := fmt.Sprintf("%p", mw)
+			if !seen[key] {
+				merged = append(merged, mw)
+				seen[key] = true
+			}
+		}
+	}
+
+	return merged
+}
+
+// mergeConstraints combines constraints from multiple routes
+func (r *Router) mergeConstraints(routes []*Route) map[string]*RouteConstraint {
+	merged := make(map[string]*RouteConstraint)
+
+	for _, route := range routes {
+		for param, constraint := range route.Constraints {
+			if existing, exists := merged[param]; exists {
+				// Merge constraints if they conflict
+				merged[param] = r.mergeConstraint(existing, constraint)
+			} else {
+				merged[param] = constraint
+			}
+		}
+	}
+
+	return merged
+}
+
+// mergeConstraint merges two constraints for the same parameter
+func (r *Router) mergeConstraint(c1, c2 *RouteConstraint) *RouteConstraint {
+	// If types are different, use regex constraint
+	if c1.Type != c2.Type {
+		return &RouteConstraint{
+			Name:    c1.Name,
+			Type:    RegexConstraint,
+			Pattern: regexp.MustCompile(".*"), // Accept all
+		}
+	}
+	return c1 // Use first constraint if types match
+}
+
+// calculateMergedPriority calculates priority for merged routes
+func (r *Router) calculateMergedPriority(routes []*Route) int {
+	maxPriority := 0
+	for _, route := range routes {
+		if route.Priority > maxPriority {
+			maxPriority = route.Priority
+		}
+	}
+	return maxPriority
+}
+
+// getAllowedMethods returns allowed methods for a set of routes
+func (r *Router) getAllowedMethods(routes []*Route) []string {
+	var methods []string
+	seen := make(map[string]bool)
+
+	for _, route := range routes {
+		if !seen[route.Method] {
+			methods = append(methods, route.Method)
+			seen[route.Method] = true
+		}
+	}
+
+	return methods
+}
+
+// AddRouteGroup adds multiple routes as a group
+func (r *Router) AddRouteGroup(group *RouteGroup) {
+	for _, route := range group.Routes {
+		// Apply group middleware
+		combinedMiddleware := append(group.Middleware, route.Middleware...)
+		route.Middleware = combinedMiddleware
+
+		r.AddRoute(route.Method, route.Pattern, route.Handler,
+			WithMiddleware(combinedMiddleware...))
+	}
+}
+
+// GetRoutesByTag returns routes filtered by tags
+func (r *Router) GetRoutesByTag(tag string) []*Route {
+	var routes []*Route
+	for _, route := range r.routes {
+		for _, routeTag := range route.Tags {
+			if routeTag == tag {
+				routes = append(routes, route)
+				break
+			}
+		}
+	}
+	return routes
+}
+
+// GetRouteInfo returns detailed information about all routes
+func (r *Router) GetRouteInfo() map[string]*RouteInfo {
+	info := make(map[string]*RouteInfo)
+
+	for key, route := range r.routes {
+		info[key] = &RouteInfo{
+			Method:          route.Method,
+			Pattern:         route.Pattern,
+			Name:            route.Name,
+			Params:          route.Params,
+			HasConstraints:  len(route.Constraints) > 0,
+			MiddlewareCount: len(route.Middleware),
+			Priority:        route.Priority,
+			Tags:            route.Tags,
+			IsMerged:        len(route.Merged) > 0,
+		}
+	}
+
+	return info
+}
+
+// RouteInfo provides information about a route
+type RouteInfo struct {
+	Method          string   `json:"method"`
+	Pattern         string   `json:"pattern"`
+	Name            string   `json:"name,omitempty"`
+	Params          []string `json:"params,omitempty"`
+	HasConstraints  bool     `json:"has_constraints"`
+	MiddlewareCount int      `json:"middleware_count"`
+	Priority        int      `json:"priority"`
+	Tags            []string `json:"tags,omitempty"`
+	IsMerged        bool     `json:"is_merged"`
+}
+
+// Enhanced RouteOption functions
+func WithPriority(priority int) RouteOption {
+	return func(r *Route) {
+		r.Priority = priority
+	}
+}
+
+func WithTags(tags ...string) RouteOption {
+	return func(r *Route) {
+		r.Tags = append(r.Tags, tags...)
+	}
+}
+
+func WithMerge(enable bool) RouteOption {
+	return func(r *Route) {
+		// This is handled at router level
 	}
 }
 
