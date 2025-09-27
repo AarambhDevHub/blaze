@@ -4,8 +4,6 @@ go 1.24.0
 
 toolchain go1.24.7
 
-replace github.com/AarambhDevHub/blaze => ./
-
 require (
 	github.com/fasthttp/websocket v1.5.12
 	github.com/json-iterator/go v1.1.12
