@@ -26,7 +26,10 @@ Memory Usage:  Ultra-low footprint
 
 *Benchmarked with `wrk -c100 -d30s` on production-grade endpoints with 100 concurrent connections over 30 seconds.*
 
-**🎯 Cache Performance Boost**: **+4.3% throughput**, **+42% data transfer**, **-33% latency** with built-in caching middleware.
+**🎯 Cache Performance Boost**: 
+ - **+4.3% throughput**
+ - **+42% data transfer**
+ - **-33% latency** with built-in caching middleware.
 
 ## ✨ Enterprise Features
 
