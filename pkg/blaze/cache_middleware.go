@@ -1,3 +1,5 @@
+// Package blaze provides high-performance HTTP caching middleware with multiple eviction strategies,
+// compression support, and flexible cache control options.
 package blaze
 
 import (

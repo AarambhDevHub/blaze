@@ -33,6 +33,10 @@ func (a *App) DELETE(path string, handler HandlerFunc, options ...RouteOption) *
 func (a *App) PATCH(path string, handler HandlerFunc, options ...RouteOption) *App
 func (a *App) OPTIONS(path string, handler HandlerFunc, options ...RouteOption) *App
 func (a *App) HEAD(path string, handler HandlerFunc, options ...RouteOption) *App
+func (a *App) CONNECT(path string, handler HandlerFunc, options ...RouteOption) *App
+func (a *App) TRACE(path string, handler HandlerFunc, options ...RouteOption) *App
+func (a *App) ANY(path string, handler HandlerFunc, options ...RouteOption) *App
+func (a *App) Match(methods []string, path string, handler HandlerFunc, options ...RouteOption) *App
 ```
 
 #### WebSocket Methods
@@ -42,11 +46,31 @@ func (a *App) WebSocket(path string, handler WebSocketHandler, options ...RouteO
 func (a *App) WebSocketWithConfig(path string, handler WebSocketHandler, config WebSocketConfig, options ...RouteOption) *App
 ```
 
+#### Static File Methods
+
+```go
+func (a *App) Static(prefix, root string) *App
+func (a *App) StaticFS(prefix string, config StaticConfig) *App
+func (a *App) File(path, filepath string) *App
+```
+
 #### Middleware Methods
 
 ```go
 func (a *App) Use(middleware MiddlewareFunc) *App
 func (a *App) Group(prefix string) *Group
+func (a *App) UseErrorHandler(config ErrorHandlerConfig) *App
+```
+
+#### State Management
+
+```go
+func (a *App) SetState(key string, value interface{}) *App
+func (a *App) GetState(key string) (interface{}, bool)
+func (a *App) MustGetState(key string) interface{}
+func (a *App) DeleteState(key string) *App
+func (a *App) ClearState() *App
+func (a *App) GetAllState() map[string]interface{}
 ```
 
 #### Server Lifecycle
@@ -130,6 +154,15 @@ func DefaultTLSConfig() TLSConfig
 func DevelopmentTLSConfig() TLSConfig
 ```
 
+#### TLS Methods
+
+```go
+func (tc *TLSConfig) BuildTLSConfig() (*tls.Config, error)
+func (tc *TLSConfig) ConfigureFastHTTPTLS(server *fasthttp.Server) error
+func (tc *TLSConfig) GetCertificateInfo() (*CertificateInfo, error)
+func (tc *TLSConfig) GetTLSHealthCheck() TLSHealthCheck
+```
+
 ### HTTP2Config
 
 HTTP/2 protocol configuration.
@@ -189,6 +222,7 @@ func (c *Context) QueryArgs() *fasthttp.Args
 ```go
 func (c *Context) Header(key string) string
 func (c *Context) SetHeader(key, value string) *Context
+func (c *Context) GetContentType() string
 ```
 
 #### Request Methods
@@ -251,6 +285,15 @@ func (c *Context) SetCookie(name, value string, expires ...time.Time) *Context
 ```go
 func (c *Context) Bind(v interface{}) error
 func (c *Context) BindJSON(v interface{}) error
+func (c *Context) BindMultipartForm(v interface{}) error
+```
+
+#### Body Validation Methods
+
+```go
+func (c *Context) ValidateBodySize(maxSize int64) error
+func (c *Context) GetBodySize() int64
+func (c *Context) GetContentLength() int
 ```
 
 #### Local Storage Methods
@@ -258,6 +301,7 @@ func (c *Context) BindJSON(v interface{}) error
 ```go
 func (c *Context) Locals(key string) interface{}
 func (c *Context) SetLocals(key string, value interface{}) *Context
+func (c *Context) GetUserValueString(key string) string
 ```
 
 #### Client Information Methods
@@ -384,24 +428,81 @@ func WithRegexConstraint(param string, pattern string) RouteOption
 
 ## Middleware API
 
-### Built-in Middleware Functions
-
-#### Core Middleware
+### Core Middleware
 
 ```go
 func Logger() MiddlewareFunc
 func Recovery() MiddlewareFunc
 func Auth(tokenValidator func(string) bool) MiddlewareFunc
 func ShutdownAware() MiddlewareFunc
+func GracefulTimeout(timeout time.Duration) MiddlewareFunc
 ```
 
-#### CORS Middleware
+### Logger Middleware
 
 ```go
+func LoggerMiddleware() MiddlewareFunc
+func LoggerMiddlewareWithConfig(config LoggerMiddlewareConfig) MiddlewareFunc
+```
+
+**LoggerMiddlewareConfig:**
+```go
+type LoggerMiddlewareConfig struct {
+    Logger              *Logger
+    SkipPaths           []string
+    LogRequestBody      bool
+    LogResponseBody     bool
+    LogQueryParams      bool
+    LogHeaders          bool
+    ExcludeHeaders      []string
+    CustomFields        func(*Context) map[string]interface{}
+    SlowRequestThreshold time.Duration
+}
+
+func DefaultLoggerMiddlewareConfig() LoggerMiddlewareConfig
+```
+
+### Error Handling Middleware
+
+```go
+func ErrorHandlerMiddleware(config ErrorHandlerConfig) MiddlewareFunc
+func RecoveryMiddleware(config ErrorHandlerConfig) MiddlewareFunc
+func NotFoundHandler() HandlerFunc
+func MethodNotAllowedHandler() HandlerFunc
+```
+
+**ErrorHandlerConfig:**
+```go
+type ErrorHandlerConfig struct {
+    EnableStackTrace    bool
+    IncludeStackTrace   bool
+    CustomErrorHandler  func(*Context, error) error
+    Logger              *Logger
+}
+
+func DefaultErrorHandlerConfig() ErrorHandlerConfig
+func DevelopmentErrorHandlerConfig() ErrorHandlerConfig
+```
+
+### CORS Middleware
+
+```
 func CORS(opts ...CORSOptions) MiddlewareFunc
 ```
 
-#### CSRF Protection
+**CORSOptions:**
+```go
+type CORSOptions struct {
+    AllowOrigins     []string
+    AllowMethods     []string
+    AllowHeaders     []string
+    ExposeHeaders    []string
+    AllowCredentials bool
+    MaxAge           int
+}
+```
+
+### CSRF Protection
 
 ```go
 func CSRF(opts CSRFOptions) MiddlewareFunc
@@ -411,41 +512,208 @@ func CSRFTokenHeader(c *Context) string
 func CSRFMeta(c *Context) string
 ```
 
-#### Cache Middleware
+**CSRFOptions:**
+```go
+type CSRFOptions struct {
+    Secret            []byte
+    TokenLookup       string
+    ContextKey        string
+    CookieName        string
+    CookiePath        string
+    CookieDomain      string
+    CookieSecure      bool
+    CookieHTTPOnly    bool
+    CookieSameSite    string
+    CookieMaxAge      int
+    Expiration        time.Duration
+    TokenLength       int
+    Skipper           func(*Context) bool
+    ErrorHandler      func(*Context, error) error
+    TrustedOrigins    []string
+    CheckReferer      bool
+    SingleUse         bool
+}
+
+func DefaultCSRFOptions() CSRFOptions
+func ProductionCSRFOptions(secret []byte) CSRFOptions
+```
+
+### Cache Middleware
 
 ```go
 func Cache(opts CacheOptions) MiddlewareFunc
 func CacheResponse(ttl time.Duration, opts ...CacheOptions) MiddlewareFunc
 func CacheStatic(opts ...CacheOptions) MiddlewareFunc
 func CacheAPI(ttl time.Duration) MiddlewareFunc
+func CacheStatus(c *Context) error
 ```
 
-#### Rate Limiting
+**CacheOptions:**
+```go
+type CacheOptions struct {
+    Store                   CacheStore
+    DefaultTTL              time.Duration
+    MaxAge                  time.Duration
+    MaxSize                 int64
+    MaxEntries              int
+    Algorithm               EvictionAlgorithm
+    Skipper                 func(*Context) bool
+    KeyGenerator            func(*Context) string
+    ShouldCache             func(*Context) bool
+    VaryHeaders             []string
+    Public                  bool
+    Private                 bool
+    NoCache                 bool
+    NoStore                 bool
+    MustRevalidate          bool
+    ProxyRevalidate         bool
+    Immutable               bool
+    EnableCompression       bool
+    CompressionLevel        int
+    CleanupInterval         time.Duration
+    EnableBackgroundCleanup bool
+    WarmupURLs              []string
+    EnableHeaders           bool
+    HeaderPrefix            string
+}
+
+func DefaultCacheOptions() CacheOptions
+func ProductionCacheOptions() CacheOptions
+```
+
+**Cache Store:**
+```go
+type MemoryStore struct {
+    entries    map[string]CacheEntry
+    maxSize    int64
+    maxEntries int
+    algorithm  EvictionAlgorithm
+}
+
+func NewMemoryStore(maxSize int64, maxEntries int, algorithm EvictionAlgorithm) *MemoryStore
+func (c *MemoryStore) Get(key string) (CacheEntry, bool)
+func (c *MemoryStore) Set(key string, entry CacheEntry, ttl time.Duration) bool
+func (c *MemoryStore) Delete(key string) bool
+func (c *MemoryStore) Clear() int
+func (c *MemoryStore) Size() int64
+func (c *MemoryStore) Keys() []string
+func (c *MemoryStore) Stats() CacheStats
+func (c *MemoryStore) Cleanup() int
+```
+
+### Compression Middleware
+
+```go
+func Compress() MiddlewareFunc
+func CompressWithConfig(config CompressionConfig) MiddlewareFunc
+func CompressWithLevel(level CompressionLevel) MiddlewareFunc
+func CompressMinLength(minLength int) MiddlewareFunc
+func CompressGzipOnly() MiddlewareFunc
+func CompressTypes(contentTypes ...string) MiddlewareFunc
+```
+
+**CompressionConfig:**
+```go
+type CompressionConfig struct {
+    Level                 CompressionLevel
+    MinLength             int
+    IncludeContentTypes   []string
+    ExcludeContentTypes   []string
+    EnableGzip            bool
+    EnableDeflate         bool
+    EnableBrotli          bool
+    ExcludePaths          []string
+    ExcludeExtensions     []string
+    EnableForHTTPS        bool
+}
+
+func DefaultCompressionConfig() CompressionConfig
+```
+
+**CompressionLevel:**
+```go
+type CompressionLevel int
+
+const (
+    CompressionLevelDefault  CompressionLevel = -1
+    CompressionLevelNone     CompressionLevel = 0
+    CompressionLevelBest     CompressionLevel = 9
+    CompressionLevelFastest  CompressionLevel = 1
+)
+```
+
+### Body Limit Middleware
+
+```go
+func BodyLimit(maxSize int64) MiddlewareFunc
+func BodyLimitWithConfig(config BodyLimitConfig) MiddlewareFunc
+func BodyLimitBytes(bytes int64) MiddlewareFunc
+func BodyLimitKB(kb int) MiddlewareFunc
+func BodyLimitMB(mb int) MiddlewareFunc
+func BodyLimitGB(gb int) MiddlewareFunc
+func BodyLimitForRoute(maxSize int64, paths ...string) MiddlewareFunc
+func BodyLimitByContentType(limits map[string]int64) MiddlewareFunc
+```
+
+**BodyLimitConfig:**
+```go
+type BodyLimitConfig struct {
+    MaxSize          int64
+    ErrorMessage     string
+    SkipPaths        []string
+    SkipContentTypes []string
+}
+
+func DefaultBodyLimitConfig() BodyLimitConfig
+```
+
+### Rate Limiting
 
 ```go
 func RateLimitMiddleware(opts RateLimitOptions) MiddlewareFunc
 ```
 
-#### Request ID
+**RateLimitOptions:**
+```go
+type RateLimitOptions struct {
+    MaxRequests      int
+    Window           time.Duration
+    KeyGenerator     func(*Context) string
+    Handler          func(*Context) error
+    SkipSuccessful   bool
+    SkipFailed       bool
+}
+```
+
+### Request ID
 
 ```go
 func RequestIDMiddleware() MiddlewareFunc
 func GetRequestID(c *Context) string
 ```
 
-#### HTTP/2 Specific Middleware
+### HTTP/2 Specific Middleware
 
 ```go
 func HTTP2Middleware() MiddlewareFunc
 func HTTP2Info() MiddlewareFunc
 func HTTP2Security() MiddlewareFunc
 func CompressHTTP2(level int) MiddlewareFunc
+func StreamInfo() MiddlewareFunc
+func HTTP2Metrics() MiddlewareFunc
 ```
 
-#### Timeout Middleware
+### Multipart Middleware
 
 ```go
-func GracefulTimeout(timeout time.Duration) MiddlewareFunc
+func MultipartMiddleware(config MultipartConfig) MiddlewareFunc
+```
+
+### Validation Middleware
+
+```go
+func ValidationMiddleware() MiddlewareFunc
+func ValidateStruct(v interface{}) error
 ```
 
 ## WebSocket API
@@ -475,6 +743,24 @@ func NewWebSocketUpgrader(config ...WebSocketConfig) *WebSocketUpgrader
 
 ```go
 func (wu *WebSocketUpgrader) Upgrade(c *Context, handler WebSocketHandler) error
+```
+
+### WebSocketConfig
+
+```go
+type WebSocketConfig struct {
+    ReadBufferSize   int
+    WriteBufferSize  int
+    CheckOrigin      func(ctx *fasthttp.RequestCtx) bool
+    ReadTimeout      time.Duration
+    WriteTimeout     time.Duration
+    PingInterval     time.Duration
+    PongTimeout      time.Duration
+    MaxMessageSize   int64
+    CompressionLevel int
+}
+
+func DefaultWebSocketConfig() WebSocketConfig
 ```
 
 ### WebSocketConnection
@@ -613,7 +899,65 @@ type MultipartConfig struct {
 }
 ```
 
+## Static File Serving
+
+### StaticConfig
+
+```go
+type StaticConfig struct {
+    Root            string
+    Index           string
+    Browse          bool
+    Compress        bool
+    ByteRange       bool
+    CacheDuration   time.Duration
+    NotFoundHandler HandlerFunc
+    Modify          func(*Context) error
+    GenerateETag    bool
+    Exclude         []string
+    MIMETypes       map[string]string
+}
+
+func DefaultStaticConfig(root string) StaticConfig
+```
+
+### Static Functions
+
+```go
+func Static(root string) HandlerFunc
+func StaticFS(config StaticConfig) HandlerFunc
+```
+
 ## Error Handling API
+
+### Error Types
+
+```go
+type HTTPError struct {
+    Code     int
+    Message  string
+    Internal error
+    Stack    []string
+}
+
+func (e *HTTPError) Error() string
+func (e *HTTPError) Unwrap() error
+func (e *HTTPError) WithInternal(err error) *HTTPError
+func (e *HTTPError) WithStack(skip int) *HTTPError
+```
+
+### Error Constructors
+
+```go
+func ErrBadRequest(message string) *HTTPError
+func ErrUnauthorized(message string) *HTTPError
+func ErrForbidden(message string) *HTTPError
+func ErrNotFound(message string) *HTTPError
+func ErrMethodNotAllowed(message string) *HTTPError
+func ErrConflict(message string) *HTTPError
+func ErrInternalServer(message string) *HTTPError
+func ErrServiceUnavailable(message string) *HTTPError
+```
 
 ### Error Response Functions
 
@@ -669,6 +1013,39 @@ type HealthCheck struct {
 func Health(version, uptime string) HealthCheck
 ```
 
+## Logger API
+
+### Logger
+
+```go
+type Logger struct {
+    level      LogLevel
+    output     io.Writer
+    enableJSON bool
+    fields     map[string]interface{}
+}
+```
+
+### Logger Methods
+
+```go
+func (l *Logger) Debug(msg string, fields ...interface{})
+func (l *Logger) Info(msg string, fields ...interface{})
+func (l *Logger) Warn(msg string, fields ...interface{})
+func (l *Logger) Error(msg string, fields ...interface{})
+func (l *Logger) Fatal(msg string, fields ...interface{})
+func (l *Logger) WithFields(fields map[string]interface{}) *Logger
+func (l *Logger) SetLevel(level LogLevel)
+func (l *Logger) SetOutput(output io.Writer)
+```
+
+### Logger Functions
+
+```go
+func NewLogger(level LogLevel, output io.Writer) *Logger
+func GetDefaultLogger() *Logger
+```
+
 ## Utility Types
 
 ### Map
@@ -700,6 +1077,28 @@ type ServerInfo struct {
 }
 ```
 
+### Group
+
+Route group with shared prefix and middleware.
+
+```go
+type Group struct {
+    prefix     string
+    middleware []MiddlewareFunc
+    app        *App
+}
+
+func (g *Group) Use(middleware MiddlewareFunc) *Group
+func (g *Group) GET(path string, handler HandlerFunc, options ...RouteOption) *Group
+func (g *Group) POST(path string, handler HandlerFunc, options ...RouteOption) *Group
+func (g *Group) PUT(path string, handler HandlerFunc, options ...RouteOption) *Group
+func (g *Group) DELETE(path string, handler HandlerFunc, options ...RouteOption) *Group
+func (g *Group) PATCH(path string, handler HandlerFunc, options ...RouteOption) *Group
+func (g *Group) OPTIONS(path string, handler HandlerFunc, options ...RouteOption) *Group
+func (g *Group) HEAD(path string, handler HandlerFunc, options ...RouteOption) *Group
+func (g *Group) Group(prefix string) *Group
+```
+
 ## Function Signatures
 
 ### Handler Types
@@ -719,7 +1118,17 @@ type RouteConstraint struct {
     Pattern *regexp.Regexp
     Type    ConstraintType
 }
+
+type ConstraintType string
+
+const (
+    IntConstraint   ConstraintType = "int"
+    UUIDConstraint  ConstraintType = "uuid"
+    AlphaConstraint ConstraintType = "alpha"
+    RegexConstraint ConstraintType = "regex"
+)
 ```
 
-This API reference provides comprehensive documentation for all major components, types, and functions in your Blaze Go web framework.
+---
 
+This API reference provides comprehensive documentation for all major components, types, and functions in the Blaze Go web framework.

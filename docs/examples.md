@@ -2,6 +2,21 @@
 
 Comprehensive examples demonstrating the Blaze web framework's features and capabilities.
 
+## Table of Contents
+
+- [Basic Server Setup](#basic-server-setup)
+- [Routing Examples](#routing-examples)
+- [Middleware Examples](#middleware-examples)
+- [Context and Request/Response](#context-and-requestresponse)
+- [File Handling](#file-handling)
+- [WebSocket Examples](#websocket-examples)
+- [TLS and Security](#tls-and-security)
+- [HTTP/2 Support](#http2-support)
+- [Database Integration](#database-integration)
+- [Caching Strategies](#caching-strategies)
+- [Testing Examples](#testing-examples)
+- [Production Deployment](#production-deployment)
+
 ## Basic Server Setup
 
 ### Simple HTTP Server
@@ -129,6 +144,12 @@ func setupRoutes(app *blaze.App) {
     
     // OPTIONS route
     app.OPTIONS("/users", optionsUsers)
+    
+    // Match multiple methods
+    app.Match([]string{"GET", "POST"}, "/multi", multiHandler)
+    
+    // ANY matches all methods
+    app.ANY("/catch-all", catchAllHandler)
 }
 
 func getUsers(c *blaze.Context) error {
@@ -142,13 +163,14 @@ func getUsers(c *blaze.Context) error {
 
 func createUser(c *blaze.Context) error {
     var user struct {
-        Name  string `json:"name"`
-        Email string `json:"email"`
+        Name  string `json:"name" validate:"required"`
+        Email string `json:"email" validate:"required,email"`
     }
     
-    if err := c.BindJSON(&user); err != nil {
+    if err := c.BindJSONAndValidate(&user); err != nil {
         return c.Status(400).JSON(blaze.Map{
-            "error": "Invalid JSON",
+            "error": "Validation failed",
+            "details": err.Error(),
         })
     }
     
@@ -157,70 +179,36 @@ func createUser(c *blaze.Context) error {
         "user":    user,
     })
 }
-
-func updateUser(c *blaze.Context) error {
-    id := c.Param("id")
-    
-    var updates map[string]interface{}
-    if err := c.BindJSON(&updates); err != nil {
-        return c.Status(400).JSON(blaze.Map{
-            "error": "Invalid JSON",
-        })
-    }
-    
-    return c.JSON(blaze.Map{
-        "message": "User updated",
-        "id":      id,
-        "updates": updates,
-    })
-}
 ```
 
-### Route Parameters
+### Route Parameters with Constraints
 
 ```go
-func routeParams(app *blaze.App) {
-    // Single parameter
-    app.GET("/users/:id", func(c *blaze.Context) error {
-        id := c.Param("id")
-        return c.JSON(blaze.Map{"user_id": id})
-    })
+func routeConstraints(app *blaze.App) {
+    // Integer constraint
+    app.GET("/users/:id", getUserByID,
+        blaze.WithIntConstraint("id"))
     
-    // Multiple parameters
-    app.GET("/users/:id/posts/:postId", func(c *blaze.Context) error {
-        userID := c.Param("id")
-        postID := c.Param("postId")
-        
-        return c.JSON(blaze.Map{
-            "user_id": userID,
-            "post_id": postID,
-        })
-    })
+    // UUID constraint
+    app.GET("/posts/:uuid", getPostByUUID,
+        blaze.WithUUIDConstraint("uuid"))
     
-    // Parameter with type conversion
-    app.GET("/users/:id/age", func(c *blaze.Context) error {
-        id, err := c.ParamInt("id")
-        if err != nil {
-            return c.Status(400).JSON(blaze.Map{
-                "error": "Invalid user ID",
-            })
-        }
-        
-        return c.JSON(blaze.Map{
-            "user_id": id,
-            "age":     25, // Example
-        })
-    })
+    // Regex constraint
+    app.GET("/files/:filename", getFile,
+        blaze.WithRegexConstraint("filename", `^[a-zA-Z0-9_\-]+\.(jpg|png|pdf)$`))
     
-    // Parameter with default value
-    app.GET("/users/:id/score", func(c *blaze.Context) error {
-        id := c.ParamIntDefault("id", 0)
-        
-        return c.JSON(blaze.Map{
-            "user_id": id,
-            "score":   100,
-        })
-    })
+    // Custom constraint
+    app.GET("/products/:sku", getProduct,
+        blaze.WithConstraint("sku", blaze.RouteConstraint{
+            Name:    "sku",
+            Pattern: regexp.MustCompile(`^[A-Z]{3}-\d{5}$`),
+            Type:    blaze.RegexConstraint,
+        }))
+}
+
+func getUserByID(c *blaze.Context) error {
+    id, _ := c.ParamInt("id") // Already validated by constraint
+    return c.JSON(blaze.Map{"user_id": id})
 }
 ```
 
@@ -234,19 +222,9 @@ func queryParams(app *blaze.App) {
         limit := c.QueryIntDefault("limit", 10)
         sortBy := c.QueryDefault("sort", "created_at")
         
-        return c.JSON(blaze.Map{
-            "query":   query,
-            "page":    page,
-            "limit":   limit,
-            "sort_by": sortBy,
-        })
-    })
-    
-    // Multiple values for same parameter
-    app.GET("/tags", func(c *blaze.Context) error {
+        // Multiple values for same parameter
         args := c.QueryArgs()
         var tags []string
-        
         args.VisitAll(func(key, value []byte) {
             if string(key) == "tag" {
                 tags = append(tags, string(value))
@@ -254,7 +232,11 @@ func queryParams(app *blaze.App) {
         })
         
         return c.JSON(blaze.Map{
-            "tags": tags,
+            "query":   query,
+            "page":    page,
+            "limit":   limit,
+            "sort_by": sortBy,
+            "tags":    tags,
         })
     })
 }
@@ -266,24 +248,31 @@ func queryParams(app *blaze.App) {
 func routeGroups(app *blaze.App) {
     // API v1 group
     v1 := app.Group("/api/v1")
-    v1.Use(blaze.Logger())
-    v1.Use(blaze.Auth(func(token string) bool {
-        return token == "valid-token"
-    }))
+    v1.Use(blaze.LoggerMiddleware())
+    v1.Use(blaze.BodyLimitMB(5))
+    v1.Use(blaze.CacheAPI(2 * time.Minute))
     
-    v1.GET("/users", func(c *blaze.Context) error {
-        return c.JSON(blaze.Map{"version": "v1", "users": []string{}})
-    })
+    v1.GET("/users", listUsers)
+    v1.POST("/users", createUser)
     
-    v1.POST("/users", func(c *blaze.Context) error {
-        return c.JSON(blaze.Map{"version": "v1", "created": true})
-    })
-    
-    // Admin group with additional middleware
+    // Nested admin group
     admin := v1.Group("/admin")
-    admin.Use(func(next blaze.HandlerFunc) blaze.HandlerFunc {
+    admin.Use(RequireAdminMiddleware())
+    
+    admin.GET("/users", adminListUsers)
+    admin.DELETE("/users/:id", adminDeleteUser)
+    
+    // Public group with different middleware
+    public := app.Group("/public")
+    public.Use(blaze.CacheStatic())
+    public.Use(blaze.Compress())
+    
+    public.GET("/files/:name", servePublicFile)
+}
+
+func RequireAdminMiddleware() blaze.MiddlewareFunc {
+    return func(next blaze.HandlerFunc) blaze.HandlerFunc {
         return func(c *blaze.Context) error {
-            // Admin-specific validation
             role := c.Header("X-User-Role")
             if role != "admin" {
                 return c.Status(403).JSON(blaze.Map{
@@ -292,62 +281,90 @@ func routeGroups(app *blaze.App) {
             }
             return next(c)
         }
-    })
+    }
+}
+```
+
+### Named Routes
+
+```go
+func namedRoutes(app *blaze.App) {
+    // Named routes for URL generation
+    app.GET("/users/:id", getUserHandler,
+        blaze.WithName("user.show"))
     
-    admin.GET("/users", func(c *blaze.Context) error {
-        return c.JSON(blaze.Map{"admin": true, "users": []string{}})
-    })
+    app.GET("/users/:id/edit", editUserHandler,
+        blaze.WithName("user.edit"))
     
-    admin.DELETE("/users/:id", func(c *blaze.Context) error {
-        id := c.Param("id")
-        return c.JSON(blaze.Map{"admin": true, "deleted": id})
-    })
+    app.POST("/users", createUserHandler,
+        blaze.WithName("user.create"))
 }
 ```
 
 ## Middleware Examples
 
-### Built-in Middleware
+### Comprehensive Middleware Stack
 
 ```go
-func builtinMiddleware(app *blaze.App) {
-    // Global middleware
-    app.Use(blaze.Logger())
+func setupMiddleware(app *blaze.App) {
+    // Recovery middleware (should be first)
     app.Use(blaze.Recovery())
-    app.Use(blaze.CORS(&blaze.CORSOptions{
-        AllowOrigins:     []string{"*"},
-        AllowMethods:     []string{"GET", "POST", "PUT", "DELETE"},
-        AllowHeaders:     []string{"*"},
-        AllowCredentials: true,
-        MaxAge:           86400,
-    }))
     
-    // Rate limiting
-    app.Use(blaze.RateLimit(&blaze.RateLimitOptions{
-        Max:      100,
-        Duration: time.Minute,
+    // Logging
+    logConfig := blaze.DefaultLoggerMiddlewareConfig()
+    logConfig.SlowRequestThreshold = 2 * time.Second
+    logConfig.SkipPaths = []string{"/health", "/metrics"}
+    app.Use(blaze.LoggerMiddlewareWithConfig(logConfig))
+    
+    // Request ID
+    app.Use(blaze.RequestIDMiddleware())
+    
+    // CORS
+    corsOpts := blaze.CORSOptions{
+        AllowOrigins:     []string{"https://example.com"},
+        AllowMethods:     []string{"GET", "POST", "PUT", "DELETE"},
+        AllowHeaders:     []string{"Origin", "Content-Type", "Authorization"},
+        ExposeHeaders:    []string{"X-Request-ID"},
+        AllowCredentials: true,
+        MaxAge:           3600,
+    }
+    app.Use(blaze.CORS(corsOpts))
+    
+    // CSRF Protection
+    csrfOpts := blaze.DefaultCSRFOptions()
+    csrfOpts.Secret = []byte("your-32-byte-secret-key-here!!!")
+    csrfOpts.CookieSecure = true
+    app.Use(blaze.CSRF(csrfOpts))
+    
+    // Body Limit
+    app.Use(blaze.BodyLimitMB(10))
+    
+    // Compression
+    app.Use(blaze.CompressWithLevel(blaze.CompressionLevelBest))
+    
+    // Rate Limiting
+    rateLimitOpts := blaze.RateLimitOptions{
+        MaxRequests: 100,
+        Window:      time.Minute,
         KeyGenerator: func(c *blaze.Context) string {
             return c.IP()
         },
-    }))
+    }
+    app.Use(blaze.RateLimitMiddleware(rateLimitOpts))
     
-    // Request ID
-    app.Use(blaze.RequestID())
+    // Cache
+    cacheOpts := blaze.DefaultCacheOptions()
+    cacheOpts.DefaultTTL = 5 * time.Minute
+    app.Use(blaze.Cache(cacheOpts))
     
-    // Cache middleware for GET requests
-    app.Use(blaze.Cache(&blaze.CacheOptions{
-        Duration: 5 * time.Minute,
-        KeyGenerator: func(c *blaze.Context) string {
-            return c.Method() + ":" + c.Path()
-        },
-    }))
+    // Shutdown awareness
+    app.Use(blaze.ShutdownAware())
 }
 ```
 
-### Custom Middleware
+### Custom Authentication Middleware
 
 ```go
-// Authentication middleware
 func AuthMiddleware(secret string) blaze.MiddlewareFunc {
     return func(next blaze.HandlerFunc) blaze.HandlerFunc {
         return func(c *blaze.Context) error {
@@ -364,167 +381,169 @@ func AuthMiddleware(secret string) blaze.MiddlewareFunc {
                 token = token[7:]
             }
             
-            // Validate token (implement your logic)
-            if !validateJWT(token, secret) {
+            // Validate JWT token
+            claims, err := validateJWT(token, secret)
+            if err != nil {
                 return c.Status(401).JSON(blaze.Map{
                     "error": "Invalid token",
                 })
             }
             
             // Store user info in context
-            userID := extractUserID(token)
-            c.SetLocals("user_id", userID)
+            c.SetLocals("user_id", claims.UserID)
+            c.SetLocals("email", claims.Email)
+            c.SetLocals("role", claims.Role)
             
             return next(c)
         }
     }
 }
 
-// Request logging middleware
-func RequestLogger() blaze.MiddlewareFunc {
+func validateJWT(token, secret string) (*Claims, error) {
+    // Implement JWT validation
+    return &Claims{
+        UserID: 123,
+        Email:  "user@example.com",
+        Role:   "user",
+    }, nil
+}
+```
+
+### Request/Response Logging Middleware
+
+```go
+func DetailedLoggingMiddleware() blaze.MiddlewareFunc {
     return func(next blaze.HandlerFunc) blaze.HandlerFunc {
         return func(c *blaze.Context) error {
             start := time.Now()
+            requestID := c.Header("X-Request-ID")
             
             // Log request
-            log.Printf("➡️  %s %s from %s", 
-                c.Method(), 
-                c.Path(), 
-                c.IP())
+            c.LogInfo("Incoming request",
+                "request_id", requestID,
+                "method", c.Method(),
+                "path", c.Path(),
+                "ip", c.IP(),
+                "user_agent", c.UserAgent())
             
+            // Execute handler
             err := next(c)
             
             // Log response
             duration := time.Since(start)
             status := c.Response().StatusCode()
             
-            log.Printf("⬅️  %s %s - %d (%v)", 
-                c.Method(), 
-                c.Path(), 
-                status, 
-                duration)
+            logLevel := "info"
+            if status >= 500 {
+                logLevel = "error"
+            } else if status >= 400 {
+                logLevel = "warn"
+            }
+            
+            switch logLevel {
+            case "error":
+                c.LogError("Request failed",
+                    "request_id", requestID,
+                    "status", status,
+                    "duration", duration,
+                    "error", err)
+            case "warn":
+                c.LogWarn("Request completed with client error",
+                    "request_id", requestID,
+                    "status", status,
+                    "duration", duration)
+            default:
+                c.LogInfo("Request completed",
+                    "request_id", requestID,
+                    "status", status,
+                    "duration", duration)
+            }
             
             return err
         }
     }
 }
-
-// CSRF protection middleware
-func CSRFProtection() blaze.MiddlewareFunc {
-    return blaze.CSRF(&blaze.CSRFOptions{
-        Secret:      []byte("your-32-byte-secret-key-here!!!"),
-        TokenLookup: []string{"header:X-CSRF-Token", "form:csrf_token"},
-        CookieName:  "_csrf",
-        CookieMaxAge: 3600,
-    })
-}
 ```
 
-### Conditional Middleware
+### Security Headers Middleware
 
 ```go
-func conditionalMiddleware(app *blaze.App) {
-    // Skip middleware based on path
-    skipAuth := func(c *blaze.Context) bool {
-        skipPaths := []string{"/health", "/metrics", "/public"}
-        for _, path := range skipPaths {
-            if strings.HasPrefix(c.Path(), path) {
-                return true
-            }
-        }
-        return false
-    }
-    
-    // Conditional authentication
-    authMiddleware := func(next blaze.HandlerFunc) blaze.HandlerFunc {
+func SecurityHeadersMiddleware() blaze.MiddlewareFunc {
+    return func(next blaze.HandlerFunc) blaze.HandlerFunc {
         return func(c *blaze.Context) error {
-            if skipAuth(c) {
-                return next(c)
-            }
+            // Set security headers
+            c.SetHeader("X-Content-Type-Options", "nosniff")
+            c.SetHeader("X-Frame-Options", "DENY")
+            c.SetHeader("X-XSS-Protection", "1; mode=block")
+            c.SetHeader("Referrer-Policy", "strict-origin-when-cross-origin")
+            c.SetHeader("Content-Security-Policy", "default-src 'self'")
+            c.SetHeader("Permissions-Policy", "geolocation=(), microphone=()")
             
-            token := c.Header("Authorization")
-            if token == "" {
-                return c.Status(401).JSON(blaze.Map{
-                    "error": "Authentication required",
-                })
+            if c.Request().URI().Scheme() == "https" {
+                c.SetHeader("Strict-Transport-Security", 
+                    "max-age=31536000; includeSubDomains; preload")
             }
             
             return next(c)
         }
     }
-    
-    app.Use(authMiddleware)
 }
 ```
 
-## Context and Request/Response Handling
+## Context and Request/Response
 
-### Request Data Binding
+### Comprehensive Request Binding
 
 ```go
-type User struct {
-    ID    int    `json:"id"`
-    Name  string `json:"name" validate:"required"`
-    Email string `json:"email" validate:"required,email"`
-    Age   int    `json:"age" validate:"min=0,max=150"`
+type UserRegistration struct {
+    Name     string                `json:"name" form:"name,required,minsize:2,maxsize:100"`
+    Email    string                `json:"email" form:"email,required"`
+    Password string                `json:"password" form:"password,required,minsize:8"`
+    Age      *int                  `json:"age" form:"age"`
+    Avatar   *blaze.MultipartFile  `form:"avatar"`
+    Tags     []string              `json:"tags" form:"tags"`
+    BirthDate *time.Time           `json:"birth_date" form:"birth_date"`
 }
 
-func requestBinding(app *blaze.App) {
+func handleRegistration(app *blaze.App) {
     // JSON binding
-    app.POST("/users", func(c *blaze.Context) error {
-        var user User
+    app.POST("/register/json", func(c *blaze.Context) error {
+        var reg UserRegistration
         
-        if err := c.BindJSON(&user); err != nil {
+        if err := c.BindJSONAndValidate(&reg); err != nil {
             return c.Status(400).JSON(blaze.Map{
-                "error": "Invalid JSON format",
-                "details": err.Error(),
-            })
-        }
-        
-        // Validate struct (using external validation library)
-        if err := validate.Struct(&user); err != nil {
-            return c.Status(422).JSON(blaze.Map{
                 "error": "Validation failed",
                 "details": err.Error(),
             })
         }
         
-        return c.Status(201).JSON(user)
+        return c.Status(201).JSON(reg)
     })
     
-    // Form binding
-    app.POST("/contact", func(c *blaze.Context) error {
-        var contact struct {
-            Name    string `form:"name"`
-            Email   string `form:"email"`
-            Message string `form:"message"`
-        }
+    // Multipart form binding
+    app.POST("/register/form", func(c *blaze.Context) error {
+        var reg UserRegistration
         
-        if err := c.BindForm(&contact); err != nil {
+        if err := c.BindMultipartFormAndValidate(&reg); err != nil {
             return c.Status(400).JSON(blaze.Map{
-                "error": "Invalid form data",
+                "error": "Validation failed",
+                "details": err.Error(),
             })
         }
         
-        return c.JSON(blaze.Map{
-            "message": "Contact form received",
-            "data":    contact,
-        })
-    })
-    
-    // Raw body access
-    app.POST("/webhook", func(c *blaze.Context) error {
-        body := c.Body()
-        signature := c.Header("X-Hub-Signature")
-        
-        // Verify webhook signature
-        if !verifySignature(body, signature) {
-            return c.Status(401).JSON(blaze.Map{
-                "error": "Invalid signature",
-            })
+        // Save avatar if provided
+        if reg.Avatar != nil {
+            avatarPath, err := c.SaveUploadedFileWithUniqueFilename(
+                reg.Avatar, "./uploads/avatars")
+            if err != nil {
+                return c.Status(500).JSON(blaze.Map{
+                    "error": "Failed to save avatar",
+                })
+            }
+            reg.Avatar.TempFilePath = avatarPath
         }
         
-        return c.JSON(blaze.Map{"status": "processed"})
+        return c.Status(201).JSON(reg)
     })
 }
 ```
@@ -532,127 +551,76 @@ func requestBinding(app *blaze.App) {
 ### Response Types
 
 ```go
-func responseTypes(app *blaze.App) {
-    // JSON response
-    app.GET("/json", func(c *blaze.Context) error {
-        return c.JSON(blaze.Map{
-            "message": "Hello JSON",
-            "timestamp": time.Now(),
-        })
+func responseExamples(app *blaze.App) {
+    // JSON responses with helpers
+    app.GET("/success", func(c *blaze.Context) error {
+        return c.JSON(blaze.OK(blaze.Map{"data": "value"}))
     })
     
-    // JSON with custom status
-    app.GET("/json-status", func(c *blaze.Context) error {
-        return c.JSONStatus(201, blaze.Map{
-            "created": true,
-        })
+    app.POST("/create", func(c *blaze.Context) error {
+        return c.JSON(blaze.Created(blaze.Map{"id": 123}))
+    })
+    
+    app.GET("/error", func(c *blaze.Context) error {
+        return c.JSON(blaze.Error("Something went wrong"))
+    })
+    
+    // Paginated response
+    app.GET("/users", func(c *blaze.Context) error {
+        users := getUsersFromDB()
+        total := getTotalUsers()
+        page := c.QueryIntDefault("page", 1)
+        perPage := c.QueryIntDefault("per_page", 10)
+        
+        return c.JSON(blaze.Paginate(users, total, page, perPage))
     })
     
     // Text response
-    app.GET("/text", func(c *blaze.Context) error {
-        return c.Text("Hello, World!")
+    app.GET("/health", func(c *blaze.Context) error {
+        return c.Text("OK")
     })
     
     // HTML response
-    app.GET("/html", func(c *blaze.Context) error {
-        html := `
-        <html>
-            <body>
-                <h1>Hello HTML</h1>
-                <p>Welcome to Blaze!</p>
-            </body>
-        </html>`
+    app.GET("/welcome", func(c *blaze.Context) error {
+        html := "<h1>Welcome!</h1>"
         return c.HTML(html)
     })
     
     // Custom headers
-    app.GET("/headers", func(c *blaze.Context) error {
-        c.SetHeader("X-Custom-Header", "MyValue")
-        c.SetHeader("X-API-Version", "1.0")
-        
-        return c.JSON(blaze.Map{"status": "success"})
-    })
-    
-    // Redirect
-    app.GET("/redirect", func(c *blaze.Context) error {
-        c.Redirect("https://example.com")
-        return nil
-    })
-    
-    // Custom redirect with status
-    app.GET("/redirect-permanent", func(c *blaze.Context) error {
-        c.Redirect("https://example.com", 301)
-        return nil
-    })
-}
-```
-
-### Headers and Cookies
-
-```go
-func headersAndCookies(app *blaze.App) {
-    // Read headers
-    app.GET("/headers", func(c *blaze.Context) error {
-        userAgent := c.Header("User-Agent")
-        contentType := c.Header("Content-Type")
-        customHeader := c.Header("X-Custom")
-        
-        return c.JSON(blaze.Map{
-            "user_agent":    userAgent,
-            "content_type":  contentType,
-            "custom_header": customHeader,
-        })
-    })
-    
-    // Set cookies
-    app.GET("/set-cookie", func(c *blaze.Context) error {
-        c.SetCookie("session_id", "abc123", time.Now().Add(24*time.Hour))
-        c.SetCookie("preferences", "dark_mode=true")
-        
-        return c.JSON(blaze.Map{"status": "cookies set"})
-    })
-    
-    // Read cookies
-    app.GET("/cookies", func(c *blaze.Context) error {
-        sessionID := c.Cookie("session_id")
-        preferences := c.Cookie("preferences")
-        
-        return c.JSON(blaze.Map{
-            "session_id":   sessionID,
-            "preferences":  preferences,
-        })
-    })
-    
-    // Client IP information
-    app.GET("/ip-info", func(c *blaze.Context) error {
-        return c.JSON(blaze.Map{
-            "ip":          c.IP(),
-            "client_ip":   c.GetClientIP(),
-            "real_ip":     c.GetRealIP(),
-            "remote_addr": c.GetRemoteAddr(),
-            "user_agent":  c.UserAgent(),
-        })
+    app.GET("/api/data", func(c *blaze.Context) error {
+        return c.
+            Status(200).
+            SetHeader("X-API-Version", "v1.0").
+            SetHeader("X-Rate-Limit", "1000").
+            JSON(blaze.Map{"data": "value"})
     })
 }
 ```
 
 ## File Handling
 
-### File Upload
+### Complete File Upload Example
 
 ```go
-func fileUpload(app *blaze.App) {
-    // Single file upload
-    app.POST("/upload", func(c *blaze.Context) error {
+func fileUploadExample(app *blaze.App) {
+    // Single file with validation
+    app.POST("/upload/single", func(c *blaze.Context) error {
         file, err := c.FormFile("file")
         if err != nil {
             return c.Status(400).JSON(blaze.Map{
-                "error": "No file uploaded",
+                "error": "No file provided",
             })
         }
         
-        // Save file
-        filename, err := c.SaveUploadedFileWithUniqueFilename(file, "./uploads")
+        // Validate file
+        if err := validateUploadedFile(file); err != nil {
+            return c.Status(400).JSON(blaze.Map{
+                "error": err.Error(),
+            })
+        }
+        
+        // Save with unique filename
+        savedPath, err := c.SaveUploadedFileWithUniqueFilename(file, "./uploads")
         if err != nil {
             return c.Status(500).JSON(blaze.Map{
                 "error": "Failed to save file",
@@ -660,89 +628,84 @@ func fileUpload(app *blaze.App) {
         }
         
         return c.JSON(blaze.Map{
-            "message":  "File uploaded successfully",
-            "filename": filename,
-            "size":     file.Size,
+            "message":       "File uploaded successfully",
+            "filename":      file.Filename,
+            "saved_path":    savedPath,
+            "size":          file.Size,
+            "content_type":  file.ContentType,
         })
     })
     
-    // Multiple file upload
-    app.POST("/upload-multiple", func(c *blaze.Context) error {
+    // Multiple files
+    app.POST("/upload/multiple", func(c *blaze.Context) error {
         files, err := c.FormFiles("files")
         if err != nil {
             return c.Status(400).JSON(blaze.Map{
-                "error": "No files uploaded",
+                "error": "No files provided",
             })
         }
         
-        var savedFiles []blaze.Map
+        var results []blaze.Map
         for _, file := range files {
-            filename, err := c.SaveUploadedFileWithUniqueFilename(file, "./uploads")
+            if err := validateUploadedFile(file); err != nil {
+                continue
+            }
+            
+            savedPath, err := c.SaveUploadedFileWithUniqueFilename(
+                file, "./uploads")
             if err != nil {
                 continue
             }
             
-            savedFiles = append(savedFiles, blaze.Map{
+            results = append(results, blaze.Map{
                 "original_name": file.Filename,
-                "saved_name":    filename,
-                "size":         file.Size,
+                "saved_path":    savedPath,
+                "size":          file.Size,
             })
         }
         
         return c.JSON(blaze.Map{
             "message": "Files uploaded",
-            "files":   savedFiles,
-        })
-    })
-    
-    // File upload with validation
-    app.POST("/upload-image", func(c *blaze.Context) error {
-        file, err := c.FormFile("image")
-        if err != nil {
-            return c.Status(400).JSON(blaze.Map{
-                "error": "No image uploaded",
-            })
-        }
-        
-        // Validate file type
-        if !file.IsImage() {
-            return c.Status(400).JSON(blaze.Map{
-                "error": "Only image files are allowed",
-            })
-        }
-        
-        // Validate file size (5MB max)
-        if file.Size > 5*1024*1024 {
-            return c.Status(400).JSON(blaze.Map{
-                "error": "File too large (max 5MB)",
-            })
-        }
-        
-        filename, err := c.SaveUploadedFileToDir(file, "./uploads/images")
-        if err != nil {
-            return c.Status(500).JSON(blaze.Map{
-                "error": "Failed to save image",
-            })
-        }
-        
-        return c.JSON(blaze.Map{
-            "message":  "Image uploaded successfully",
-            "filename": filename,
+            "files":   results,
+            "count":   len(results),
         })
     })
 }
+
+func validateUploadedFile(file *blaze.MultipartFile) error {
+    // Size validation
+    maxSize := int64(10 * 1024 * 1024) // 10MB
+    if file.Size > maxSize {
+        return fmt.Errorf("file too large (max 10MB)")
+    }
+    
+    // Type validation
+    allowedTypes := []string{"image/jpeg", "image/png", "application/pdf"}
+    allowed := false
+    for _, t := range allowedTypes {
+        if file.ContentType == t {
+            allowed = true
+            break
+        }
+    }
+    
+    if !allowed {
+        return fmt.Errorf("file type not allowed")
+    }
+    
+    return nil
+}
 ```
 
-### File Download and Serving
+### File Download and Streaming
 
 ```go
-func fileDownload(app *blaze.App) {
-    // Serve static files
+func fileDownloadExample(app *blaze.App) {
+    // Serve file
     app.GET("/files/:filename", func(c *blaze.Context) error {
         filename := c.Param("filename")
         filepath := "./uploads/" + filename
         
-        // Check if file exists
         if !c.FileExists(filepath) {
             return c.Status(404).JSON(blaze.Map{
                 "error": "File not found",
@@ -766,15 +729,23 @@ func fileDownload(app *blaze.App) {
         return c.ServeFileDownload(filepath, filename)
     })
     
-    // Stream large files
-    app.GET("/stream/:filename", func(c *blaze.Context) error {
+    // Inline display (for images, PDFs)
+    app.GET("/view/:filename", func(c *blaze.Context) error {
         filename := c.Param("filename")
         filepath := "./uploads/" + filename
+        
+        return c.ServeFileInline(filepath)
+    })
+    
+    // Stream large files with range support
+    app.GET("/stream/:filename", func(c *blaze.Context) error {
+        filename := c.Param("filename")
+        filepath := "./videos/" + filename
         
         return c.StreamFile(filepath)
     })
     
-    // Get file info
+    // File info
     app.GET("/info/:filename", func(c *blaze.Context) error {
         filename := c.Param("filename")
         filepath := "./uploads/" + filename
@@ -796,83 +767,19 @@ func fileDownload(app *blaze.App) {
 }
 ```
 
-### Multipart Form Handling
-
-```go
-func multipartForms(app *blaze.App) {
-    // Handle multipart form with files and data
-    app.POST("/profile", func(c *blaze.Context) error {
-        // Get form values
-        name := c.FormValue("name")
-        email := c.FormValue("email")
-        bio := c.FormValue("bio")
-        
-        // Get uploaded avatar
-        avatar, err := c.FormFile("avatar")
-        var avatarPath string
-        if err == nil {
-            avatarPath, _ = c.SaveUploadedFileToDir(avatar, "./uploads/avatars")
-        }
-        
-        // Get multiple photos
-        photos, err := c.FormFiles("photos")
-        var photoPaths []string
-        if err == nil {
-            for _, photo := range photos {
-                if photo.IsImage() {
-                    path, _ := c.SaveUploadedFileToDir(photo, "./uploads/photos")
-                    photoPaths = append(photoPaths, path)
-                }
-            }
-        }
-        
-        return c.JSON(blaze.Map{
-            "name":        name,
-            "email":       email,
-            "bio":         bio,
-            "avatar":      avatarPath,
-            "photos":      photoPaths,
-            "photo_count": len(photoPaths),
-        })
-    })
-    
-    // Custom multipart configuration
-    app.POST("/upload-config", func(c *blaze.Context) error {
-        config := &blaze.MultipartConfig{
-            MaxMemory:   10 << 20, // 10MB
-            MaxFileSize: 50 << 20, // 50MB
-            MaxFiles:    5,
-            AllowedExtensions: []string{".jpg", ".png", ".pdf"},
-            KeepInMemory: false,
-        }
-        
-        form, err := c.MultipartFormWithConfig(config)
-        if err != nil {
-            return c.Status(400).JSON(blaze.Map{
-                "error": err.Error(),
-            })
-        }
-        
-        return c.JSON(blaze.Map{
-            "files_count": form.GetFileCount(),
-            "total_size":  form.GetTotalSize(),
-            "fields":      len(form.Value),
-        })
-    })
-}
-```
-
 ## WebSocket Examples
 
-### Basic WebSocket
+### Basic WebSocket Echo Server
 
 ```go
-func webSocketBasic(app *blaze.App) {
-    app.WebSocket("/ws", func(ws *blaze.WebSocketConnection) error {
-        log.Println("New WebSocket connection")
+func websocketEcho(app *blaze.App) {
+    app.WebSocket("/ws/echo", func(ws *blaze.WebSocketConnection) error {
+        log.Printf("New WebSocket connection from %s", ws.RemoteAddr())
+        
+        // Set local data
+        ws.SetLocal("connected_at", time.Now())
         
         for {
-            // Read message
             messageType, data, err := ws.ReadMessage()
             if err != nil {
                 log.Printf("WebSocket read error: %v", err)
@@ -881,7 +788,7 @@ func webSocketBasic(app *blaze.App) {
             
             log.Printf("Received: %s", data)
             
-            // Echo message back
+            // Echo back
             if err := ws.WriteMessage(messageType, data); err != nil {
                 log.Printf("WebSocket write error: %v", err)
                 break
@@ -893,130 +800,119 @@ func webSocketBasic(app *blaze.App) {
 }
 ```
 
-### WebSocket Chat Server
+### WebSocket Chat Server with Hub
 
 ```go
-type ChatServer struct {
-    clients    map[*blaze.WebSocketConnection]bool
-    broadcast  chan []byte
+type ChatHub struct {
+    clients    map[*blaze.WebSocketConnection]string
+    broadcast  chan Message
     register   chan *blaze.WebSocketConnection
     unregister chan *blaze.WebSocketConnection
     mutex      sync.RWMutex
 }
 
-func NewChatServer() *ChatServer {
-    return &ChatServer{
-        clients:    make(map[*blaze.WebSocketConnection]bool),
-        broadcast:  make(chan []byte),
+type Message struct {
+    Type     string `json:"type"`
+    Username string `json:"username"`
+    Content  string `json:"content"`
+    Time     string `json:"time"`
+}
+
+func NewChatHub() *ChatHub {
+    return &ChatHub{
+        clients:    make(map[*blaze.WebSocketConnection]string),
+        broadcast:  make(chan Message),
         register:   make(chan *blaze.WebSocketConnection),
         unregister: make(chan *blaze.WebSocketConnection),
     }
 }
 
-func (cs *ChatServer) Run() {
+func (h *ChatHub) Run() {
     for {
         select {
-        case client := <-cs.register:
-            cs.mutex.Lock()
-            cs.clients[client] = true
-            cs.mutex.Unlock()
-            log.Printf("Client registered. Total: %d", len(cs.clients))
+        case client := <-h.register:
+            h.mutex.Lock()
+            username := client.GetLocal("username").(string)
+            h.clients[client] = username
+            h.mutex.Unlock()
             
-        case client := <-cs.unregister:
-            cs.mutex.Lock()
-            if _, ok := cs.clients[client]; ok {
-                delete(cs.clients, client)
-                client.Close()
+            // Broadcast join message
+            h.broadcast <- Message{
+                Type:     "join",
+                Username: username,
+                Time:     time.Now().Format(time.RFC3339),
             }
-            cs.mutex.Unlock()
-            log.Printf("Client unregistered. Total: %d", len(cs.clients))
             
-        case message := <-cs.broadcast:
-            cs.mutex.RLock()
-            for client := range cs.clients {
-                if err := client.WriteMessage(1, message); err != nil {
-                    log.Printf("Broadcast error: %v", err)
-                    client.Close()
-                    delete(cs.clients, client)
+        case client := <-h.unregister:
+            h.mutex.Lock()
+            if username, ok := h.clients[client]; ok {
+                delete(h.clients, client)
+                client.Close()
+                
+                // Broadcast leave message
+                h.broadcast <- Message{
+                    Type:     "leave",
+                    Username: username,
+                    Time:     time.Now().Format(time.RFC3339),
                 }
             }
-            cs.mutex.RUnlock()
+            h.mutex.Unlock()
+            
+        case message := <-h.broadcast:
+            h.mutex.RLock()
+            for client := range h.clients {
+                if err := client.WriteJSON(message); err != nil {
+                    log.Printf("Broadcast error: %v", err)
+                }
+            }
+            h.mutex.RUnlock()
         }
     }
 }
 
-func webSocketChat(app *blaze.App) {
-    chatServer := NewChatServer()
-    go chatServer.Run()
+func websocketChat(app *blaze.App) {
+    hub := NewChatHub()
+    go hub.Run()
     
-    app.WebSocket("/chat", func(ws *blaze.WebSocketConnection) error {
-        chatServer.register <- ws
+    config := blaze.DefaultWebSocketConfig()
+    config.MaxMessageSize = 1024 * 1024 // 1MB
+    config.PingInterval = 30 * time.Second
+    
+    app.WebSocketWithConfig("/ws/chat", func(ws *blaze.WebSocketConnection) error {
+        // Get username from query parameter
+        username := ws.Context().Query("username")
+        if username == "" {
+            username = "Anonymous"
+        }
+        
+        ws.SetLocal("username", username)
+        hub.register <- ws
+        
         defer func() {
-            chatServer.unregister <- ws
+            hub.unregister <- ws
         }()
         
-        for {
-            _, message, err := ws.ReadMessage()
-            if err != nil {
-                log.Printf("WebSocket error: %v", err)
-                break
-            }
-            
-            // Broadcast to all clients
-            chatServer.broadcast <- message
-        }
-        
-        return nil
-    })
-}
-```
-
-### WebSocket with Custom Configuration
-
-```go
-func webSocketCustom(app *blaze.App) {
-    config := &blaze.WebSocketConfig{
-        HandshakeTimeout: 10 * time.Second,
-        ReadBufferSize:   1024,
-        WriteBufferSize:  1024,
-        CheckOrigin: func(r *http.Request) bool {
-            origin := r.Header.Get("Origin")
-            return origin == "https://yourdomain.com"
-        },
-        EnableCompression: true,
-    }
-    
-    app.WebSocketWithConfig("/ws-custom", func(ws *blaze.WebSocketConnection) error {
-        // Set read deadline
-        ws.SetReadDeadline(time.Now().Add(60 * time.Second))
-        
-        // Set pong handler
-        ws.SetPongHandler(func(string) error {
-            ws.SetReadDeadline(time.Now().Add(60 * time.Second))
-            return nil
-        })
-        
-        // Start ping routine
+        // Ping routine
         go func() {
             ticker := time.NewTicker(30 * time.Second)
             defer ticker.Stop()
             
             for range ticker.C {
-                if err := ws.WriteMessage(9, []byte{}); err != nil {
+                if err := ws.Ping([]byte{}); err != nil {
                     return
                 }
             }
         }()
         
         for {
-            messageType, data, err := ws.ReadMessage()
-            if err != nil {
+            var msg Message
+            if err := ws.ReadJSON(&msg); err != nil {
                 break
             }
             
-            if err := ws.WriteMessage(messageType, data); err != nil {
-                break
-            }
+            msg.Username = username
+            msg.Time = time.Now().Format(time.RFC3339)
+            hub.broadcast <- msg
         }
         
         return nil
@@ -1026,33 +922,40 @@ func webSocketCustom(app *blaze.App) {
 
 ## TLS and Security
 
-### HTTPS Server
+### Production HTTPS Server
 
 ```go
-func httpsServer() {
+func productionHTTPS() {
     config := blaze.ProductionConfig()
     config.EnableTLS = true
+    config.RedirectHTTPToTLS = true
     
     app := blaze.NewWithConfig(config)
     
-    // Configure TLS
+    // TLS configuration
     tlsConfig := &blaze.TLSConfig{
-        CertFile: "/path/to/cert.pem",
-        KeyFile:  "/path/to/key.pem",
+        CertFile:   "/etc/ssl/certs/server.crt",
+        KeyFile:    "/etc/ssl/private/server.key",
         MinVersion: tls.VersionTLS12,
         CipherSuites: []uint16{
             tls.TLS_ECDHE_ECDSA_WITH_AES_256_GCM_SHA384,
             tls.TLS_ECDHE_RSA_WITH_AES_256_GCM_SHA384,
+            tls.TLS_ECDHE_ECDSA_WITH_AES_128_GCM_SHA256,
+            tls.TLS_ECDHE_RSA_WITH_AES_128_GCM_SHA256,
         },
-        NextProtos: []string{"h2", "http/1.1"},
+        NextProtos:    []string{"h2", "http/1.1"},
+        OCSPStapling:  true,
     }
     
     app.SetTLSConfig(tlsConfig)
     
+    // Security middleware
+    app.Use(SecurityHeadersMiddleware())
+    
     app.GET("/", func(c *blaze.Context) error {
         return c.JSON(blaze.Map{
-            "message": "Secure HTTPS connection",
-            "tls":     true,
+            "secure":   true,
+            "protocol": c.Protocol(),
         })
     })
     
@@ -1063,11 +966,11 @@ func httpsServer() {
 ### Auto TLS for Development
 
 ```go
-func autoTLS() {
+func developmentAutoTLS() {
     app := blaze.New()
     
-    // Enable auto TLS with self-signed certificates
-    app.EnableAutoTLS("localhost", "127.0.0.1")
+    // Enable auto TLS with self-signed certificate
+    app.EnableAutoTLS("localhost", "127.0.0.1", "myapp.local")
     
     app.GET("/", func(c *blaze.Context) error {
         return c.JSON(blaze.Map{
@@ -1080,56 +983,19 @@ func autoTLS() {
 }
 ```
 
-### Security Middleware
-
-```go
-func securityMiddleware(app *blaze.App) {
-    // CSRF Protection
-    app.Use(blaze.CSRF(&blaze.CSRFOptions{
-        Secret:      []byte("your-32-byte-secret-key-here!!!"),
-        TokenLookup: []string{"header:X-CSRF-Token", "form:csrf_token"},
-    }))
-    
-    // Rate Limiting
-    app.Use(blaze.RateLimit(&blaze.RateLimitOptions{
-        Max:      100,
-        Duration: time.Minute,
-        KeyGenerator: func(c *blaze.Context) string {
-            return c.IP()
-        },
-    }))
-    
-    // Security Headers
-    app.Use(func(next blaze.HandlerFunc) blaze.HandlerFunc {
-        return func(c *blaze.Context) error {
-            c.SetHeader("X-Content-Type-Options", "nosniff")
-            c.SetHeader("X-Frame-Options", "DENY")
-            c.SetHeader("X-XSS-Protection", "1; mode=block")
-            c.SetHeader("Referrer-Policy", "strict-origin-when-cross-origin")
-            
-            if c.Request().URI().Scheme() == "https" {
-                c.SetHeader("Strict-Transport-Security", "max-age=31536000; includeSubDomains")
-            }
-            
-            return next(c)
-        }
-    })
-}
-```
-
 ## HTTP/2 Support
 
-### HTTP/2 Server
+### HTTP/2 with Server Push
 
 ```go
-func http2Server() {
+func http2Example() {
     config := blaze.ProductionConfig()
     config.EnableHTTP2 = true
     config.EnableTLS = true
     
     app := blaze.NewWithConfig(config)
     
-    // Configure HTTP/2
+    // HTTP/2 configuration
     http2Config := &blaze.HTTP2Config{
         Enabled:              true,
         MaxConcurrentStreams: 1000,
@@ -1139,44 +1005,38 @@ func http2Server() {
     
     app.SetHTTP2Config(http2Config)
     
-    // Configure TLS for HTTP/2
+    // TLS required for HTTP/2
     tlsConfig := &blaze.TLSConfig{
-        CertFile:   "/path/to/cert.pem",
-        KeyFile:    "/path/to/key.pem",
+        CertFile:   "server.crt",
+        KeyFile:    "server.key",
         NextProtos: []string{"h2", "http/1.1"},
     }
     
     app.SetTLSConfig(tlsConfig)
     
-    app.GET("/", func(c *blaze.Context) error {
-        return c.JSON(blaze.Map{
-            "protocol": c.Protocol(),
-            "http2":    c.IsHTTP2(),
-            "stream_id": c.StreamID(),
-        })
-    })
-    
     // Server push example
-    app.GET("/page", func(c *blaze.Context) error {
+    app.GET("/", func(c *blaze.Context) error {
         if c.IsHTTP2() {
             // Push resources
             resources := map[string]string{
-                "/assets/style.css":  "style",
-                "/assets/script.js":  "script",
-                "/assets/image.png":  "image",
+                "/css/main.css":   "style",
+                "/js/app.js":      "script",
+                "/img/logo.png":   "image",
             }
             c.PushResources(resources)
+            
+            log.Printf("Handling request on HTTP/2 stream %d", c.StreamID())
         }
         
         html := `
         <html>
             <head>
-                <link rel="stylesheet" href="/assets/style.css">
-                <script src="/assets/script.js"></script>
+                <link rel="stylesheet" href="/css/main.css">
+                <script src="/js/app.js"></script>
             </head>
             <body>
                 <h1>HTTP/2 Page</h1>
-                <img src="/assets/image.png" alt="Image">
+                <img src="/img/logo.png" alt="Logo">
             </body>
         </html>`
         
@@ -1187,54 +1047,75 @@ func http2Server() {
 }
 ```
 
-### HTTP/2 Cleartext (H2C) for Development
+## Caching Strategies
+
+### Multi-level Caching
 
 ```go
-func http2Cleartext() {
-    config := blaze.DevelopmentConfig()
-    config.EnableHTTP2 = true
+func cachingStrategies(app *blaze.App) {
+    // Static files - long cache
+    staticGroup := app.Group("/static")
+    staticGroup.Use(blaze.CacheStatic())
+    staticGroup.Use(blaze.Compress())
     
-    app := blaze.NewWithConfig(config)
+    // API endpoints - short cache
+    apiGroup := app.Group("/api")
+    apiGroup.Use(blaze.CacheAPI(2 * time.Minute))
     
-    // Configure H2C (HTTP/2 without TLS)
-    http2Config := &blaze.HTTP2Config{
-        Enabled: true,
-        H2C:     true, // Enable HTTP/2 over cleartext
+    // Custom cache configuration
+    cacheOpts := blaze.CacheOptions{
+        DefaultTTL: 10 * time.Minute,
+        MaxSize:    500 * 1024 * 1024, // 500MB
+        MaxEntries: 50000,
+        Algorithm:  blaze.LRU,
+        VaryHeaders: []string{"Accept-Encoding", "Accept-Language"},
+        Public:     true,
+        EnableCompression: true,
+        CompressionLevel:  9,
     }
     
-    app.SetHTTP2Config(http2Config)
+    app.Use(blaze.Cache(cacheOpts))
     
-    app.GET("/", func(c *blaze.Context) error {
+    // Cache status endpoint
+    app.GET("/cache/status", blaze.CacheStatus)
+    
+    // Invalidate cache
+    app.POST("/cache/invalidate", func(c *blaze.Context) error {
+        pattern := c.Query("pattern")
+        count := blaze.InvalidateCache(cacheStore, pattern)
+        
         return c.JSON(blaze.Map{
-            "protocol": c.Protocol(),
-            "http2":    c.IsHTTP2(),
-            "h2c":      true,
+            "invalidated": count,
         })
     })
-    
-    log.Fatal(app.ListenAndServe())
 }
 ```
 
 ## Database Integration
 
-### MySQL Example
+### PostgreSQL with Connection Pool
 
 ```go
 import (
     "database/sql"
-    _ "github.com/go-sql-driver/mysql"
+    _ "github.com/lib/pq"
 )
 
-func mysqlIntegration(app *blaze.App) {
-    // Database connection
-    db, err := sql.Open("mysql", "user:password@tcp(localhost:3306)/dbname")
+func postgresIntegration() {
+    // Database connection pool
+    connStr := "postgres://user:pass@localhost/dbname?sslmode=disable"
+    db, err := sql.Open("postgres", connStr)
     if err != nil {
         log.Fatal(err)
     }
-    defer db.Close()
     
-    // Middleware to inject database
+    db.SetMaxOpenConns(25)
+    db.SetMaxIdleConns(5)
+    db.SetConnMaxLifetime(5 * time.Minute)
+    
+    app := blaze.New()
+    
+    // Inject database into context
     app.Use(func(next blaze.HandlerFunc) blaze.HandlerFunc {
         return func(c *blaze.Context) error {
             c.SetLocals("db", db)
@@ -1242,159 +1123,62 @@ func mysqlIntegration(app *blaze.App) {
         }
     })
     
-    // Get users
-    app.GET("/users", func(c *blaze.Context) error {
+    // CRUD operations
+    app.GET("/users/:id", func(c *blaze.Context) error {
         db := c.Locals("db").(*sql.DB)
+        id, _ := c.ParamInt("id")
         
-        rows, err := db.Query("SELECT id, name, email FROM users")
+        var user User
+        err := db.QueryRow(
+            "SELECT id, name, email FROM users WHERE id = $1", id,
+        ).Scan(&user.ID, &user.Name, &user.Email)
+        
+        if err == sql.ErrNoRows {
+            return c.Status(404).JSON(blaze.Map{
+                "error": "User not found",
+            })
+        }
+        
         if err != nil {
             return c.Status(500).JSON(blaze.Map{
-                "error": "Database query failed",
-            })
-        }
-        defer rows.Close()
-        
-        var users []blaze.Map
-        for rows.Next() {
-            var id int
-            var name, email string
-            
-            if err := rows.Scan(&id, &name, &email); err != nil {
-                continue
-            }
-            
-            users = append(users, blaze.Map{
-                "id":    id,
-                "name":  name,
-                "email": email,
+                "error": "Database error",
             })
         }
         
-        return c.JSON(blaze.Map{
-            "users": users,
-        })
+        return c.JSON(user)
     })
     
-    // Create user
     app.POST("/users", func(c *blaze.Context) error {
         db := c.Locals("db").(*sql.DB)
         
-        var user struct {
-            Name  string `json:"name"`
-            Email string `json:"email"`
-        }
-        
-        if err := c.BindJSON(&user); err != nil {
+        var user User
+        if err := c.BindJSONAndValidate(&user); err != nil {
             return c.Status(400).JSON(blaze.Map{
-                "error": "Invalid JSON",
+                "error": err.Error(),
             })
         }
         
-        result, err := db.Exec("INSERT INTO users (name, email) VALUES (?, ?)", user.Name, user.Email)
+        err := db.QueryRow(
+            "INSERT INTO users (name, email) VALUES ($1, $2) RETURNING id",
+            user.Name, user.Email,
+        ).Scan(&user.ID)
+        
         if err != nil {
             return c.Status(500).JSON(blaze.Map{
                 "error": "Failed to create user",
             })
         }
         
-        id, _ := result.LastInsertId()
-        
-        return c.Status(201).JSON(blaze.Map{
-            "id":    id,
-            "name":  user.Name,
-            "email": user.Email,
-        })
-    })
-}
-```
-
-### Redis Integration
-
-```go
-import (
-    "github.com/go-redis/redis/v8"
-    "context"
-)
-
-func redisIntegration(app *blaze.App) {
-    // Redis client
-    rdb := redis.NewClient(&redis.Options{
-        Addr:     "localhost:6379",
-        Password: "",
-        DB:       0,
+        return c.Status(201).JSON(user)
     })
     
-    // Test connection
-    ctx := context.Background()
-    _, err := rdb.Ping(ctx).Result()
-    if err != nil {
-        log.Fatal("Redis connection failed:", err)
-    }
-    
-    // Middleware to inject Redis client
-    app.Use(func(next blaze.HandlerFunc) blaze.HandlerFunc {
-        return func(c *blaze.Context) error {
-            c.SetLocals("redis", rdb)
-            return next(c)
-        }
-    })
-    
-    // Cache endpoint
-    app.GET("/cache/:key", func(c *blaze.Context) error {
-        rdb := c.Locals("redis").(*redis.Client)
-        key := c.Param("key")
-        
-        val, err := rdb.Get(ctx, key).Result()
-        if err == redis.Nil {
-            return c.Status(404).JSON(blaze.Map{
-                "error": "Key not found",
-            })
-        } else if err != nil {
-            return c.Status(500).JSON(blaze.Map{
-                "error": "Redis error",
-            })
-        }
-        
-        return c.JSON(blaze.Map{
-            "key":   key,
-            "value": val,
-        })
-    })
-    
-    // Set cache
-    app.POST("/cache/:key", func(c *blaze.Context) error {
-        rdb := c.Locals("redis").(*redis.Client)
-        key := c.Param("key")
-        
-        var data struct {
-            Value string        `json:"value"`
-            TTL   time.Duration `json:"ttl"`
-        }
-        
-        if err := c.BindJSON(&data); err != nil {
-            return c.Status(400).JSON(blaze.Map{
-                "error": "Invalid JSON",
-            })
-        }
-        
-        err := rdb.Set(ctx, key, data.Value, data.TTL).Err()
-        if err != nil {
-            return c.Status(500).JSON(blaze.Map{
-                "error": "Failed to set cache",
-            })
-        }
-        
-        return c.JSON(blaze.Map{
-            "message": "Cache set successfully",
-            "key":     key,
-        })
-    })
+    log.Fatal(app.ListenAndServe())
 }
 ```
 
 ## Testing Examples
 
-### Unit Tests
+### Comprehensive Unit Tests
 
 ```go
 package main
@@ -1409,296 +1193,150 @@ import (
     "github.com/AarambhDevHub/blaze/pkg/blaze"
 )
 
-func TestGetUsers(t *testing.T) {
-    app := blaze.New()
-    app.GET("/users", func(c *blaze.Context) error {
-        return c.JSON(blaze.Map{
-            "users": []blaze.Map{
-                {"id": 1, "name": "Alice"},
-                {"id": 2, "name": "Bob"},
-            },
-        })
-    })
-    
-    req := httptest.NewRequest("GET", "/users", nil)
-    resp := httptest.NewRecorder()
-    
-    app.ServeHTTP(resp, req)
-    
-    if resp.Code != http.StatusOK {
-        t.Errorf("Expected status 200, got %d", resp.Code)
-    }
-    
-    var result map[string]interface{}
-    if err := json.Unmarshal(resp.Body.Bytes(), &result); err != nil {
-        t.Errorf("Failed to parse response: %v", err)
-    }
-    
-    users := result["users"].([]interface{})
-    if len(users) != 2 {
-        t.Errorf("Expected 2 users, got %d", len(users))
-    }
-}
-
-func TestCreateUser(t *testing.T) {
-    app := blaze.New()
-    app.POST("/users", func(c *blaze.Context) error {
-        var user struct {
-            Name  string `json:"name"`
-            Email string `json:"email"`
-        }
-        
-        if err := c.BindJSON(&user); err != nil {
-            return c.Status(400).JSON(blaze.Map{
-                "error": "Invalid JSON",
-            })
-        }
-        
-        return c.Status(201).JSON(blaze.Map{
-            "id":    1,
-            "name":  user.Name,
-            "email": user.Email,
-        })
-    })
-    
-    userData := map[string]string{
-        "name":  "John Doe",
-        "email": "john@example.com",
-    }
-    
-    jsonData, _ := json.Marshal(userData)
-    req := httptest.NewRequest("POST", "/users", bytes.NewBuffer(jsonData))
-    req.Header.Set("Content-Type", "application/json")
-    resp := httptest.NewRecorder()
-    
-    app.ServeHTTP(resp, req)
-    
-    if resp.Code != http.StatusCreated {
-        t.Errorf("Expected status 201, got %d", resp.Code)
-    }
-}
-
-func TestMiddleware(t *testing.T) {
-    app := blaze.New()
-    
-    // Add test middleware
-    app.Use(func(next blaze.HandlerFunc) blaze.HandlerFunc {
-        return func(c *blaze.Context) error {
-            c.SetHeader("X-Test-Middleware", "true")
-            return next(c)
-        }
-    })
-    
-    app.GET("/test", func(c *blaze.Context) error {
-        return c.JSON(blaze.Map{"status": "ok"})
-    })
-    
-    req := httptest.NewRequest("GET", "/test", nil)
-    resp := httptest.NewRecorder()
-    
-    app.ServeHTTP(resp, req)
-    
-    if resp.Header().Get("X-Test-Middleware") != "true" {
-        t.Error("Middleware header not set")
-    }
-}
-```
-
-### Integration Tests
-
-```go
-func TestFullAPIFlow(t *testing.T) {
+func TestUserAPI(t *testing.T) {
     app := setupTestApp()
     
-    // Test creating a user
-    userData := map[string]string{
-        "name":  "Integration Test User",
-        "email": "test@example.com",
+    tests := []struct {
+        name           string
+        method         string
+        path           string
+        body           interface{}
+        expectedStatus int
+        checkResponse  func(*testing.T, *httptest.ResponseRecorder)
+    }{
+        {
+            name:           "Get Users",
+            method:         "GET",
+            path:           "/api/users",
+            expectedStatus: http.StatusOK,
+            checkResponse: func(t *testing.T, resp *httptest.ResponseRecorder) {
+                var result map[string]interface{}
+                json.Unmarshal(resp.Body.Bytes(), &result)
+                users := result["users"].([]interface{})
+                if len(users) == 0 {
+                    t.Error("Expected users array")
+                }
+            },
+        },
+        {
+            name:   "Create User",
+            method: "POST",
+            path:   "/api/users",
+            body: map[string]string{
+                "name":  "Test User",
+                "email": "test@example.com",
+            },
+            expectedStatus: http.StatusCreated,
+        },
     }
     
-    jsonData, _ := json.Marshal(userData)
-    req := httptest.NewRequest("POST", "/api/v1/users", bytes.NewBuffer(jsonData))
-    req.Header.Set("Content-Type", "application/json")
-    req.Header.Set("Authorization", "Bearer test-token")
-    resp := httptest.NewRecorder()
-    
-    app.ServeHTTP(resp, req)
-    
-    if resp.Code != http.StatusCreated {
-        t.Fatalf("Failed to create user: %d", resp.Code)
-    }
-    
-    var createResp map[string]interface{}
-    json.Unmarshal(resp.Body.Bytes(), &createResp)
-    userID := int(createResp["id"].(float64))
-    
-    // Test getting the user
-    req = httptest.NewRequest("GET", fmt.Sprintf("/api/v1/users/%d", userID), nil)
-    req.Header.Set("Authorization", "Bearer test-token")
-    resp = httptest.NewRecorder()
-    
-    app.ServeHTTP(resp, req)
-    
-    if resp.Code != http.StatusOK {
-        t.Errorf("Failed to get user: %d", resp.Code)
-    }
-    
-    // Test updating the user
-    updateData := map[string]string{
-        "name": "Updated User Name",
-    }
-    
-    jsonData, _ = json.Marshal(updateData)
-    req = httptest.NewRequest("PUT", fmt.Sprintf("/api/v1/users/%d", userID), bytes.NewBuffer(jsonData))
-    req.Header.Set("Content-Type", "application/json")
-    req.Header.Set("Authorization", "Bearer test-token")
-    resp = httptest.NewRecorder()
-    
-    app.ServeHTTP(resp, req)
-    
-    if resp.Code != http.StatusOK {
-        t.Errorf("Failed to update user: %d", resp.Code)
-    }
-    
-    // Test deleting the user
-    req = httptest.NewRequest("DELETE", fmt.Sprintf("/api/v1/users/%d", userID), nil)
-    req.Header.Set("Authorization", "Bearer test-token")
-    resp = httptest.NewRecorder()
-    
-    app.ServeHTTP(resp, req)
-    
-    if resp.Code != http.StatusOK {
-        t.Errorf("Failed to delete user: %d", resp.Code)
+    for _, tt := range tests {
+        t.Run(tt.name, func(t *testing.T) {
+            var req *http.Request
+            
+            if tt.body != nil {
+                jsonData, _ := json.Marshal(tt.body)
+                req = httptest.NewRequest(tt.method, tt.path, bytes.NewBuffer(jsonData))
+                req.Header.Set("Content-Type", "application/json")
+            } else {
+                req = httptest.NewRequest(tt.method, tt.path, nil)
+            }
+            
+            resp := httptest.NewRecorder()
+            app.ServeHTTP(resp, req)
+            
+            if resp.Code != tt.expectedStatus {
+                t.Errorf("Expected status %d, got %d", tt.expectedStatus, resp.Code)
+            }
+            
+            if tt.checkResponse != nil {
+                tt.checkResponse(t, resp)
+            }
+        })
     }
 }
 
 func setupTestApp() *blaze.App {
     app := blaze.New()
-    
-    app.Use(blaze.Logger())
     app.Use(blaze.Recovery())
-    
-    // Test authentication
-    app.Use(blaze.Auth(func(token string) bool {
-        return token == "test-token"
-    }))
-    
-    setupAPIRoutes(app)
-    
+    setupRoutes(app)
     return app
 }
 ```
 
 ## Production Deployment
 
-### Production Configuration
+### Complete Production Setup
 
 ```go
-func productionSetup() {
+func productionDeployment() {
     config := blaze.ProductionConfig()
+    config.Concurrency = 10000
     
     app := blaze.NewWithConfig(config)
     
+    // TLS Configuration
+    tlsConfig := &blaze.TLSConfig{
+        CertFile:   os.Getenv("TLS_CERT_FILE"),
+        KeyFile:    os.Getenv("TLS_KEY_FILE"),
+        MinVersion: tls.VersionTLS12,
+        CipherSuites: []uint16{
+            tls.TLS_ECDHE_ECDSA_WITH_AES_256_GCM_SHA384,
+            tls.TLS_ECDHE_RSA_WITH_AES_256_GCM_SHA384,
+        },
+        NextProtos: []string{"h2", "http/1.1"},
+    }
+    app.SetTLSConfig(tlsConfig)
+    
+    // HTTP/2 Configuration
+    http2Config := &blaze.HTTP2Config{
+        Enabled:              true,
+        MaxConcurrentStreams: 5000,
+        EnablePush:           true,
+    }
+    app.SetHTTP2Config(http2Config)
+    
     // Production middleware stack
     app.Use(blaze.Recovery())
-    app.Use(blaze.Logger())
-    app.Use(blaze.RequestID())
-    app.Use(blaze.CORS(&blaze.CORSOptions{
-        AllowOrigins: []string{
-            "https://yourdomain.com",
-            "https://www.yourdomain.com",
-        },
-        AllowMethods:     []string{"GET", "POST", "PUT", "DELETE"},
-        AllowHeaders:     []string{"*"},
-        AllowCredentials: true,
+    app.Use(DetailedLoggingMiddleware())
+    app.Use(blaze.RequestIDMiddleware())
+    app.Use(SecurityHeadersMiddleware())
+    app.Use(blaze.CORS(blaze.CORSOptions{
+        AllowOrigins: []string{os.Getenv("ALLOWED_ORIGIN")},
+        AllowMethods: []string{"GET", "POST", "PUT", "DELETE"},
     }))
-    
-    // Rate limiting
-    app.Use(blaze.RateLimit(&blaze.RateLimitOptions{
-        Max:      1000,
-        Duration: time.Hour,
-        KeyGenerator: func(c *blaze.Context) string {
-            return c.IP()
-        },
+    app.Use(blaze.RateLimitMiddleware(blaze.RateLimitOptions{
+        MaxRequests: 1000,
+        Window:      time.Hour,
     }))
+    app.Use(blaze.CompressWithLevel(blaze.CompressionLevelBest))
+    app.Use(blaze.Cache(blaze.ProductionCacheOptions()))
     
-    // Security headers
-    app.Use(blaze.HTTP2Security())
-    
-    // Cache static resources
-    app.Use(blaze.Cache(&blaze.CacheOptions{
-        Duration: 24 * time.Hour,
-        KeyGenerator: func(c *blaze.Context) string {
-            if strings.HasPrefix(c.Path(), "/static/") {
-                return c.Path()
-            }
-            return ""
-        },
-    }))
-    
-    setupRoutes(app)
-    
-    log.Fatal(app.ListenAndServeGraceful())
-}
-```
-
-### Health Checks and Monitoring
-
-```go
-func healthChecks(app *blaze.App) {
-    // Basic health check
+    // Health checks
     app.GET("/health", func(c *blaze.Context) error {
-        return c.JSON(blaze.Health("1.0.0", "24h"))
+        return c.JSON(blaze.Health("1.0.0", getUptime()))
     })
     
-    // Detailed health check
-    app.GET("/health/detailed", func(c *blaze.Context) error {
-        serverInfo := app.GetServerInfo()
-        
-        return c.JSON(blaze.Map{
-            "status":    "healthy",
-            "timestamp": time.Now(),
-            "version":   "1.0.0",
-            "server":    serverInfo,
-            "uptime":    "24h",
-            "memory":    getMemoryUsage(),
-            "database":  checkDatabaseHealth(),
-            "redis":     checkRedisHealth(),
-        })
-    })
-    
-    // Metrics endpoint
-    app.GET("/metrics", func(c *blaze.Context) error {
-        return c.JSON(blaze.Map{
-            "requests_total":     getRequestCount(),
-            "response_time_avg":  getAverageResponseTime(),
-            "memory_usage":       getMemoryUsage(),
-            "active_connections": getActiveConnections(),
-        })
-    })
-    
-    // Readiness probe
     app.GET("/ready", func(c *blaze.Context) error {
-        if !isApplicationReady() {
+        if !isReady() {
             return c.Status(503).JSON(blaze.Map{
                 "status": "not ready",
             })
         }
-        
-        return c.JSON(blaze.Map{
-            "status": "ready",
-        })
+        return c.JSON(blaze.Map{"status": "ready"})
     })
     
-    // Liveness probe
-    app.GET("/alive", func(c *blaze.Context) error {
-        return c.JSON(blaze.Map{
-            "status": "alive",
-            "timestamp": time.Now(),
-        })
+    // Metrics
+    app.GET("/metrics", func(c *blaze.Context) error {
+        return c.JSON(getMetrics())
     })
+    
+    // Setup application routes
+    setupRoutes(app)
+    
+    // Graceful shutdown
+    log.Fatal(app.ListenAndServeGraceful(syscall.SIGINT, syscall.SIGTERM))
 }
 ```
 
-This comprehensive examples documentation covers all major features of the Blaze framework, providing practical code examples for building production-ready web applications with Go. Each example includes proper error handling, security considerations, and best practices for real-world usage.
-
+This comprehensive examples documentation covers all major features of the Blaze framework with production-ready code examples, best practices, and real-world usage patterns.

@@ -61,6 +61,10 @@ type App struct {
 	http2Config *HTTP2Config     // HTTP/2 protocol configuration
 	http2Server *HTTP2Server     // HTTP/2 server instance when HTTP/2 is enabled
 
+	// State management
+	state   map[string]interface{}
+	stateMu sync.RWMutex
+
 	// Graceful shutdown management
 	shutdownCtx    context.Context    // Context for coordinating graceful shutdown across components
 	shutdownCancel context.CancelFunc // Function to trigger shutdown signal to all components
@@ -743,6 +747,128 @@ func (a *App) ListenAndServeGraceful(signals ...os.Signal) error {
 	return a.Shutdown(shutdownCtx)
 }
 
+// UseErrorHandler sets up centralized error handling middleware
+func (a *App) UseErrorHandler(config *ErrorHandlerConfig) *App {
+	if config == nil {
+		if a.config.Development {
+			config = DevelopmentErrorHandlerConfig()
+		} else {
+			config = DefaultErrorHandlerConfig()
+		}
+	}
+
+	// Add recovery middleware first
+	a.Use(RecoveryMiddleware(config))
+
+	// Then add error handler middleware
+	a.Use(ErrorHandlerMiddleware(config))
+
+	return a
+}
+
+// SetState sets a global application state value
+func (a *App) SetState(key string, value interface{}) *App {
+	a.stateMu.Lock()
+	defer a.stateMu.Unlock()
+
+	if a.state == nil {
+		a.state = make(map[string]interface{})
+	}
+
+	a.state[key] = value
+	return a
+}
+
+// GetState retrieves a global application state value
+func (a *App) GetState(key string) (interface{}, bool) {
+	a.stateMu.RLock()
+	defer a.stateMu.RUnlock()
+
+	if a.state == nil {
+		return nil, false
+	}
+
+	value, exists := a.state[key]
+	return value, exists
+}
+
+// MustGetState retrieves state or panics if not found
+func (a *App) MustGetState(key string) interface{} {
+	value, exists := a.GetState(key)
+	if !exists {
+		panic(fmt.Sprintf("state key %s not found", key))
+	}
+	return value
+}
+
+// DeleteState removes a state value
+func (a *App) DeleteState(key string) *App {
+	a.stateMu.Lock()
+	defer a.stateMu.Unlock()
+
+	if a.state != nil {
+		delete(a.state, key)
+	}
+
+	return a
+}
+
+// ClearState removes all state values
+func (a *App) ClearState() *App {
+	a.stateMu.Lock()
+	defer a.stateMu.Unlock()
+
+	a.state = make(map[string]interface{})
+	return a
+}
+
+// GetAllState returns a copy of all state values
+func (a *App) GetAllState() map[string]interface{} {
+	a.stateMu.RLock()
+	defer a.stateMu.RUnlock()
+
+	if a.state == nil {
+		return make(map[string]interface{})
+	}
+
+	// Create a copy
+	stateCopy := make(map[string]interface{}, len(a.state))
+	for k, v := range a.state {
+		stateCopy[k] = v
+	}
+
+	return stateCopy
+}
+
+// Static serves static files from a directory with default configuration
+func (a *App) Static(prefix, root string) *App {
+	handler := Static(root)
+
+	// Register route for files
+	a.GET(prefix+"/*", handler)
+
+	return a
+}
+
+// StaticFS serves static files with custom configuration
+func (a *App) StaticFS(prefix string, config StaticConfig) *App {
+	handler := StaticFS(config)
+
+	// Register route for files
+	a.GET(prefix+"/*", handler)
+
+	return a
+}
+
+// File serves a single specific file
+func (a *App) File(path, filepath string) *App {
+	a.GET(path, func(c *Context) error {
+		return c.SendFile(filepath)
+	})
+
+	return a
+}
+
 // Use adds middleware to the application's global middleware stack.
 //
 // Middleware is executed in the order it's added (first added = first executed).
@@ -1166,6 +1292,9 @@ func (a *App) handler(ctx *fasthttp.RequestCtx) {
 	// Set shutdown context in locals
 	blazeCtx.SetLocals("shutdown_ctx", a.shutdownCtx)
 
+	// Inject app reference for state access
+	blazeCtx.SetLocals("__app__", a)
+
 	var handler HandlerFunc
 	var err error
 
@@ -1176,9 +1305,7 @@ func (a *App) handler(ctx *fasthttp.RequestCtx) {
 	)
 
 	if !found {
-		handler = func(c *Context) error {
-			return c.Status(404).JSON(Map{"error": "Not Found"})
-		}
+		handler = NotFoundHandler()
 	} else {
 		// Set route parameters
 		for key, value := range params {

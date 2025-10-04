@@ -1,6 +1,21 @@
 # Routing
 
-Blaze provides a powerful and flexible routing system built on a high-performance radix tree implementation. The router supports advanced features including route parameters, wildcards, constraints, middleware, route groups, route merging, and all HTTP methods.
+Blaze provides a powerful and flexible routing system built on a high-performance radix tree implementation. The router supports advanced features including route parameters, wildcards, constraints, middleware, route groups, and all HTTP methods including CONNECT, TRACE, ANY, and Match.
+
+## Table of Contents
+
+- [Basic Route Registration](#basic-route-registration)
+- [Supported HTTP Methods](#supported-http-methods)
+- [Route Parameters](#route-parameters)
+- [Route Constraints](#route-constraints)
+- [Route Groups](#route-groups)
+- [Route Options](#route-options)
+- [Query Parameters](#query-parameters)
+- [WebSocket Routes](#websocket-routes)
+- [Static File Routes](#static-file-routes)
+- [Router Configuration](#router-configuration)
+- [Advanced Features](#advanced-features)
+- [Best Practices](#best-practices)
 
 ## Basic Route Registration
 
@@ -16,7 +31,6 @@ app.GET("/", func(c *blaze.Context) error {
 
 // POST route
 app.POST("/users", func(c *blaze.Context) error {
-    // Handle user creation
     return c.JSON(blaze.Map{"success": true})
 })
 
@@ -26,31 +40,28 @@ app.DELETE("/users/:id", deleteUserHandler)
 app.PATCH("/users/:id", patchUserHandler)
 app.HEAD("/health", healthCheckHandler)
 app.OPTIONS("/api/*", corsHandler)
-
-// New HTTP methods
-app.CONNECT("/tunnel", tunnelHandler)
-app.TRACE("/debug", traceHandler)
-
-// Handle multiple methods
-app.ANY("/api/health", healthHandler)
-app.Match([]string{"GET", "POST", "PUT"}, "/api/data", dataHandler)
 ```
 
 ## Supported HTTP Methods
 
-Blaze supports all HTTP methods including:
+Blaze supports all standard and extended HTTP methods:
+
+### Standard HTTP Methods
 
 - **GET** - Retrieve resources
-- **POST** - Create new resources  
+- **POST** - Create new resources
 - **PUT** - Update/replace resources
 - **DELETE** - Remove resources
 - **PATCH** - Partially update resources
 - **HEAD** - Get headers only
 - **OPTIONS** - CORS preflight requests
+
+### Extended HTTP Methods
+
 - **CONNECT** - Establish tunnel connections
 - **TRACE** - Request tracing and debugging
-- **ANY** - Handle all HTTP methods with single handler
-- **Match** - Handle specific HTTP methods
+- **ANY** - Handle all HTTP methods with a single handler
+- **Match** - Handle specific multiple HTTP methods
 
 ### Advanced Method Handling
 
@@ -58,8 +69,8 @@ Blaze supports all HTTP methods including:
 // ANY route handles all HTTP methods
 app.ANY("/api/health", func(c *blaze.Context) error {
     return c.JSON(blaze.Map{
-        "status": "healthy",
-        "method": c.Method(),
+        "status":    "healthy",
+        "method":    c.Method(),
         "timestamp": time.Now(),
     })
 })
@@ -93,10 +104,10 @@ app.TRACE("/debug", func(c *blaze.Context) error {
     })
     
     return c.JSON(blaze.Map{
-        "method": c.Method(),
-        "path": c.Path(),
+        "method":  c.Method(),
+        "path":    c.Path(),
         "headers": headers,
-        "body": c.BodyString(),
+        "body":    c.BodyString(),
     })
 })
 ```
@@ -134,7 +145,7 @@ app.CONNECT("/users/:id/session", func(c *blaze.Context) error {
 
 ### Parameter Helpers
 
-The context provides helper methods for parameter conversion:
+The context provides helper methods for type conversion:
 
 ```go
 app.GET("/users/:id", func(c *blaze.Context) error {
@@ -150,6 +161,12 @@ app.GET("/users/:id", func(c *blaze.Context) error {
     return c.JSON(blaze.Map{"id": id, "page": page})
 })
 ```
+
+**Available Parameter Methods:**
+- `Param(key string) string` - Get string parameter
+- `ParamInt(key string) (int, error)` - Get integer parameter
+- `ParamIntDefault(key string, defaultValue int) int` - Get integer with default
+- `SetParam(key, value string)` - Set parameter (useful in middleware)
 
 ### Wildcard Parameters
 
@@ -167,44 +184,41 @@ app.ANY("/api/v1/*path", func(c *blaze.Context) error {
     path := c.Param("path")
     return c.JSON(blaze.Map{
         "api_path": path,
-        "method": c.Method(),
+        "method":   c.Method(),
     })
 })
 ```
 
 ## Route Constraints
 
-Blaze provides a powerful constraint system to validate route parameters:
+Blaze provides a powerful constraint system to validate route parameters before handler execution:
 
 ### Built-in Constraints
 
 ```go
 // Integer constraint
 app.GET("/users/:id", userHandler,
-    blaze.WithIntConstraint("id"),
-)
+    blaze.WithIntConstraint("id"))
 
-// UUID constraint  
+// UUID constraint
 app.GET("/items/:uuid", itemHandler,
-    blaze.WithUUIDConstraint("uuid"),
-)
+    blaze.WithUUIDConstraint("uuid"))
 
 // Custom regex constraint
 app.GET("/products/:sku", productHandler,
-    blaze.WithRegexConstraint("sku", `^[A-Z]{2}-\d{4}$`),
-)
+    blaze.WithRegexConstraint("sku", `^[A-Z]{2}-\d{4}$`))
 
 // Constraints work with all HTTP methods
 app.CONNECT("/servers/:id", serverConnectHandler,
-    blaze.WithIntConstraint("id"),
-)
+    blaze.WithIntConstraint("id"))
 
 app.TRACE("/sessions/:uuid", sessionTraceHandler,
-    blaze.WithUUIDConstraint("uuid"),
-)
+    blaze.WithUUIDConstraint("uuid"))
 ```
 
 ### Custom Constraints
+
+Create custom constraints for specific validation needs:
 
 ```go
 // Define custom constraint
@@ -215,13 +229,23 @@ ageConstraint := blaze.RouteConstraint{
 }
 
 app.GET("/users/:age/profile", profileHandler,
-    blaze.WithConstraint("age", ageConstraint),
-)
+    blaze.WithConstraint("age", ageConstraint))
+
+// Multiple constraints
+app.GET("/products/:category/:sku", productHandler,
+    blaze.WithConstraint("category", categoryConstraint),
+    blaze.WithRegexConstraint("sku", `^[A-Z0-9-]+$`))
 ```
+
+**Available Constraint Types:**
+- `IntConstraint` - Validates integers
+- `UUIDConstraint` - Validates UUID format
+- `AlphaConstraint` - Validates alphabetic characters
+- `RegexConstraint` - Custom regex pattern
 
 ## Route Groups
 
-Route groups allow you to organize routes with shared prefixes and middleware:
+Route groups allow organizing routes with shared prefixes and middleware:
 
 ### Basic Route Groups
 
@@ -261,8 +285,8 @@ admin.ANY("/system/*path", adminSystemHandler)
 // API routes with rate limiting
 api := app.Group("/api")
 api.Use(blaze.RateLimitMiddleware(blaze.RateLimitOptions{
-    Requests: 100,
-    Window:   time.Minute,
+    MaxRequests: 100,
+    Window:      time.Minute,
 }))
 
 api.GET("/data", dataHandler)
@@ -271,6 +295,8 @@ api.CONNECT("/stream", streamHandler)
 ```
 
 ### Nested Route Groups
+
+Create deeply nested route hierarchies:
 
 ```go
 // Main API group
@@ -302,86 +328,25 @@ admin.Use(adminAuthMiddleware)
 admin.ANY("/system/*path", adminSystemHandler)
 ```
 
-## Route Merging
-
-Blaze supports advanced route merging capabilities for better organization:
-
-### Basic Route Merging
-
-```go
-// Enable route merging in router config
-config := &blaze.RouterConfig{
-    EnableMerging: true,
-    MaxMergeDepth: 10,
-}
-
-app := blaze.NewWithConfig(&blaze.Config{
-    RouterConfig: config,
-})
-
-// Define multiple routes with same pattern
-app.GET("/api/users", getUsersHandler)
-app.POST("/api/users", createUserHandler)
-app.PUT("/api/users", updateUsersHandler)
-app.DELETE("/api/users", deleteUsersHandler)
-
-// Merge routes automatically
-if err := app.Router().MergeRoutes("/api/users"); err != nil {
-    log.Printf("Route merging error: %v", err)
-}
-```
-
-### Route Groups for Organization
-
-```go
-// Create organized route groups
-authRoutes := &blaze.RouteGroup{
-    Name:        "Authentication",
-    Description: "User authentication and authorization routes",
-    Middleware: []blaze.MiddlewareFunc{
-        corsMiddleware,
-        securityHeadersMiddleware,
-    },
-    Routes: []*blaze.Route{
-        {Method: "POST", Pattern: "/auth/login", Handler: loginHandler},
-        {Method: "POST", Pattern: "/auth/logout", Handler: logoutHandler},
-        {Method: "POST", Pattern: "/auth/refresh", Handler: refreshTokenHandler},
-        {Method: "GET", Pattern: "/auth/me", Handler: getCurrentUserHandler},
-        {Method: "CONNECT", Pattern: "/auth/session", Handler: sessionHandler},
-        {Method: "TRACE", Pattern: "/auth/trace", Handler: authTraceHandler},
-    },
-}
-
-// Add route group to router
-app.Router().AddRouteGroup(authRoutes)
-
-// Get routes by tags
-taggedRoutes := app.Router().GetRoutesByTag("auth")
-```
-
 ## Route Options
 
-Routes support various configuration options:
+Routes support various configuration options for advanced control:
 
 ### Named Routes
 
 ```go
 app.GET("/users/:id", getUserHandler,
-    blaze.WithName("user.show"),
-)
+    blaze.WithName("user.show"))
 
 app.POST("/users", createUserHandler,
-    blaze.WithName("user.create"),
-)
+    blaze.WithName("user.create"))
 
 // Named routes with new HTTP methods
 app.CONNECT("/tunnel/:target", tunnelHandler,
-    blaze.WithName("tunnel.connect"),
-)
+    blaze.WithName("tunnel.connect"))
 
 app.TRACE("/debug/:session", debugHandler,
-    blaze.WithName("debug.trace"),
-)
+    blaze.WithName("debug.trace"))
 ```
 
 ### Route-Specific Middleware
@@ -389,22 +354,19 @@ app.TRACE("/debug/:session", debugHandler,
 ```go
 // Apply middleware to specific routes
 app.GET("/protected", protectedHandler,
-    blaze.WithMiddleware(authMiddleware, loggingMiddleware),
-)
+    blaze.WithMiddleware(authMiddleware, loggingMiddleware))
 
 // Multiple middleware options with new HTTP methods
 app.CONNECT("/secure-tunnel", secureTunnelHandler,
     blaze.WithName("secure.tunnel"),
     blaze.WithMiddleware(authMiddleware, encryptionMiddleware),
-    blaze.WithConstraint("target", targetConstraint),
-)
+    blaze.WithIntConstraint("port"))
 
 // Route with priority and tags
 app.ANY("/api/priority", priorityHandler,
     blaze.WithPriority(10),
     blaze.WithTags("api", "priority", "production"),
-    blaze.WithMiddleware(cacheMiddleware),
-)
+    blaze.WithMiddleware(cacheMiddleware))
 ```
 
 ### Advanced Route Options
@@ -412,13 +374,11 @@ app.ANY("/api/priority", priorityHandler,
 ```go
 // Route with custom priority
 app.GET("/high-priority", handler,
-    blaze.WithPriority(100),
-)
+    blaze.WithPriority(100))
 
 // Route with tags for organization
 app.GET("/api/data", dataHandler,
-    blaze.WithTags("api", "data", "v1"),
-)
+    blaze.WithTags("api", "data", "v1"))
 
 // Combine multiple options
 app.ANY("/api/users/:id", userHandler,
@@ -426,13 +386,12 @@ app.ANY("/api/users/:id", userHandler,
     blaze.WithIntConstraint("id"),
     blaze.WithPriority(50),
     blaze.WithTags("api", "users"),
-    blaze.WithMiddleware(authMiddleware, validationMiddleware),
-)
+    blaze.WithMiddleware(authMiddleware, validationMiddleware))
 ```
 
 ## Query Parameters
 
-Access query parameters through the context:
+Access query parameters through the context with type conversion:
 
 ```go
 app.GET("/search", func(c *blaze.Context) error {
@@ -462,12 +421,12 @@ app.GET("/search", func(c *blaze.Context) error {
 // Query parameters work with all HTTP methods
 app.TRACE("/debug", func(c *blaze.Context) error {
     level := c.QueryDefault("level", "info")
-    verbose := c.QueryBoolDefault("verbose", false)
+    verbose := c.QueryIntDefault("verbose", 0)
     
     return c.JSON(blaze.Map{
         "trace_level": level,
-        "verbose": verbose,
-        "method": c.Method(),
+        "verbose":     verbose,
+        "method":      c.Method(),
     })
 })
 ```
@@ -548,81 +507,61 @@ wsGroup.WebSocket("/notifications", notificationHandler)
 wsGroup.WebSocketWithConfig("/streaming", streamHandler, wsConfig)
 ```
 
+## Static File Routes
+
+Serve static files and directories:
+
+### Basic Static Serving
+
+```go
+// Serve entire directory
+app.Static("/static", "./public")
+
+// Serve specific file
+app.File("/favicon.ico", "./public/favicon.ico")
+```
+
+### Advanced Static Configuration
+
+```go
+staticConfig := blaze.DefaultStaticConfig("./public")
+staticConfig.Index = "index.html"
+staticConfig.Browse = false  // Disable directory browsing
+staticConfig.Compress = true
+staticConfig.CacheDuration = 24 * time.Hour
+staticConfig.GenerateETag = true
+staticConfig.ByteRange = true  // Enable range requests
+
+app.StaticFS("/static", staticConfig)
+```
+
 ## Router Configuration
 
 The router can be configured with various options:
 
 ```go
 // Enhanced router configuration
-config := &blaze.RouterConfig{
+config := blaze.RouterConfig{
     CaseSensitive:          false, // Case-insensitive routes
-    StrictSlash:           false, // /path and /path/ are the same
-    RedirectSlash:         true,  // Redirect /path/ to /path
-    UseEscapedPath:        false, // Use raw path
+    StrictSlash:            false, // /path and /path/ are the same
+    RedirectSlash:          true,  // Redirect /path/ to /path
+    UseEscapedPath:         false, // Use raw path
     HandleMethodNotAllowed: true,  // Handle 405 Method Not Allowed
-    HandleOPTIONS:         true,  // Handle OPTIONS requests
-    EnableMerging:         true,  // Enable route merging
-    MaxMergeDepth:         10,    // Maximum merge depth
+    HandleOPTIONS:          true,  // Handle OPTIONS requests
 }
 
-// Create app with custom router config
-app := blaze.NewWithConfig(&blaze.Config{
-    RouterConfig: config,
-    // ... other config options
-})
+// Create router with custom config
+router := blaze.NewRouter(config)
 ```
 
-## Route Information and Debugging
+## Advanced Features
 
-### Route Information Access
-
-```go
-app.GET("/users/:id", func(c *blaze.Context) error {
-    // Get the matched route pattern
-    pattern := c.GetUserValue("route_pattern")
-    
-    // Get route name if set
-    routeName := c.GetUserValue("route_name")
-    
-    return c.JSON(blaze.Map{
-        "pattern": pattern,
-        "name":    routeName,
-        "method":  c.Method(),
-    })
-})
-
-// Get detailed route information
-routeInfo := app.Router().GetRouteInfo()
-for path, info := range routeInfo {
-    fmt.Printf("Route: %s %s (Priority: %d, Tags: %v)\n", 
-        info.Method, info.Pattern, info.Priority, info.Tags)
-}
-```
-
-### Route Debugging
-
-```go
-// Debug routes with TRACE method
-app.TRACE("/debug/routes", func(c *blaze.Context) error {
-    routeInfo := app.Router().GetRouteInfo()
-    return c.JSON(blaze.Map{
-        "total_routes": len(routeInfo),
-        "routes": routeInfo,
-        "request_info": blaze.Map{
-            "method": c.Method(),
-            "path": c.Path(),
-            "params": c.AllParams(),
-        },
-    })
-})
-```
-
-## Route Matching Priority
+### Route Matching Priority
 
 Blaze uses a radix tree for efficient route matching with the following priority:
 
 1. **Static segments** - Exact matches have highest priority
-2. **Named parameters** - `:param` segments  
+2. **Named parameters** - `:param` segments
 3. **Wildcard parameters** - `*param` segments have lowest priority
 
 ```go
@@ -637,20 +576,16 @@ app.CONNECT("/servers/:id", serverHandler)              // 2. Parameter
 app.CONNECT("/servers/*path", genericHandler)           // 3. Wildcard
 ```
 
-## Advanced Router Features
-
 ### Route Constraints Validation
 
 The router automatically validates constraints before calling handlers:
 
 ```go
 app.GET("/api/users/:id", userHandler,
-    blaze.WithIntConstraint("id"),
-)
+    blaze.WithIntConstraint("id"))
 
 app.CONNECT("/servers/:id", serverHandler,
-    blaze.WithIntConstraint("id"),
-)
+    blaze.WithIntConstraint("id"))
 
 // If :id is not a valid integer, returns 404 automatically
 // Handler only called if constraint passes
@@ -754,10 +689,9 @@ app.TRACE("/users/:id/trace", traceUser, blaze.WithName("users.trace"))
 app.ANY("/users/:id/status", userStatus, blaze.WithName("users.status"))
 
 // Use tags for better organization
-app.GET("/api/users", apiListUsers, 
+app.GET("/api/users", apiListUsers,
     blaze.WithName("api.users.index"),
-    blaze.WithTags("api", "users", "v1"),
-)
+    blaze.WithTags("api", "users", "v1"))
 ```
 
 ### Error Handling for Different Methods
@@ -768,7 +702,7 @@ app.ANY("/api/resource/:id", func(c *blaze.Context) error {
     id, err := c.ParamInt("id")
     if err != nil {
         return c.Status(400).JSON(blaze.Map{
-            "error": "Invalid resource ID",
+            "error":  "Invalid resource ID",
             "method": c.Method(),
         })
     }
@@ -776,8 +710,8 @@ app.ANY("/api/resource/:id", func(c *blaze.Context) error {
     // Check if resource exists
     if !resourceExists(id) {
         return c.Status(404).JSON(blaze.Map{
-            "error": "Resource not found",
-            "id": id,
+            "error":  "Resource not found",
+            "id":     id,
             "method": c.Method(),
         })
     }
@@ -800,9 +734,9 @@ app.ANY("/api/resource/:id", func(c *blaze.Context) error {
     default:
         c.SetHeader("Allow", "GET,POST,PUT,PATCH,DELETE,HEAD,OPTIONS,CONNECT,TRACE")
         return c.Status(405).JSON(blaze.Map{
-            "error": "Method not allowed",
-            "method": c.Method(),
-            "allowed": []string{"GET","POST","PUT","PATCH","DELETE","HEAD","OPTIONS","CONNECT","TRACE"},
+            "error":   "Method not allowed",
+            "method":  c.Method(),
+            "allowed": []string{"GET", "POST", "PUT", "PATCH", "DELETE", "HEAD", "OPTIONS", "CONNECT", "TRACE"},
         })
     }
 })

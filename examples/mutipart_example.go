@@ -23,7 +23,7 @@ func main() {
 	// Add middleware
 	app.Use(blaze.Logger())
 	app.Use(blaze.Recovery())
-	app.Use(blaze.CORS())
+	app.Use(blaze.CORS(blaze.DefaultCORSOptions()))
 
 	// Multipart middleware with custom config
 	multipartConfig := blaze.ProductionMultipartConfig()

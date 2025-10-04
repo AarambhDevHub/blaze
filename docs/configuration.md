@@ -1,6 +1,6 @@
 # Configuration
 
-Blaze provides flexible configuration options to customize your web application for different environments and use cases. This guide covers all configuration aspects including server settings, TLS/HTTPS, HTTP/2, and environment-specific configurations.
+Blaze provides flexible configuration options to customize your web application for different environments and use cases. This guide covers all configuration aspects including server settings, TLS/HTTPS, HTTP/2, middleware, and environment-specific configurations.
 
 ## Table of Contents
 
@@ -9,6 +9,8 @@ Blaze provides flexible configuration options to customize your web application 
 - [Server Configuration](#server-configuration)
 - [TLS/HTTPS Configuration](#tlshttps-configuration)
 - [HTTP/2 Configuration](#http2-configuration)
+- [Middleware Configuration](#middleware-configuration)
+- [Router Configuration](#router-configuration)
 - [Environment Variables](#environment-variables)
 - [Configuration Examples](#configuration-examples)
 
@@ -20,21 +22,21 @@ The main configuration is handled through the `Config` struct:
 
 ```go
 type Config struct {
-    Host               string
-    Port               int
-    TLSPort            int
-    ReadTimeout        time.Duration
-    WriteTimeout       time.Duration
-    MaxRequestBodySize int
-    Concurrency        int
+    Host               string        // Server bind address
+    Port               int           // HTTP port
+    TLSPort            int           // HTTPS port
+    ReadTimeout        time.Duration // Read timeout
+    WriteTimeout       time.Duration // Write timeout
+    MaxRequestBodySize int           // Maximum request body size
+    Concurrency        int           // Maximum concurrent connections
     
     // Protocol configuration
-    EnableHTTP2       bool
-    EnableTLS         bool
-    RedirectHTTPToTLS bool
+    EnableHTTP2       bool // Enable HTTP/2 support
+    EnableTLS         bool // Enable TLS/HTTPS
+    RedirectHTTPToTLS bool // Redirect HTTP to HTTPS
     
     // Development settings
-    Development bool
+    Development bool // Development mode
 }
 ```
 
@@ -182,22 +184,30 @@ type TLSConfig struct {
     KeyFile  string
     
     // Auto-generate certificates
-    AutoTLS      bool
-    TLSCacheDir  string
-    Domains      []string
-    Organization string
+    AutoTLS                 bool
+    TLSCacheDir             string
+    Domains                 []string
+    Organization            string
     
     // TLS settings
-    MinVersion   uint16
-    MaxVersion   uint16
-    CipherSuites []uint16
+    MinVersion              uint16
+    MaxVersion              uint16
+    CipherSuites            []uint16
     
     // Client authentication
-    ClientAuth tls.ClientAuthType
-    ClientCAs  *x509.CertPool
+    ClientAuth              tls.ClientAuthType
+    ClientCAs               *x509.CertPool
     
     // HTTP/2 support
-    NextProtos []string
+    NextProtos              []string
+    
+    // Certificate settings
+    CertValidityDuration    time.Duration
+    OCSPStapling            bool
+    SessionTicketsDisabled  bool
+    CurvePreferences        []tls.CurveID
+    Renegotiation           tls.RenegotiationSupport
+    InsecureSkipVerify      bool
 }
 ```
 
@@ -276,6 +286,10 @@ type HTTP2Config struct {
     IdleTimeout                  time.Duration
     ReadTimeout                  time.Duration
     WriteTimeout                 time.Duration
+    MaxDecoderHeaderTableSize    uint32
+    MaxEncoderHeaderTableSize    uint32
+    MaxReadFrameSize             uint32
+    PermitProhibitedCipherSuites bool
 }
 ```
 
@@ -322,6 +336,337 @@ http2Config := &blaze.HTTP2Config{
 
 app := blaze.NewWithConfig(blaze.DevelopmentConfig())
 app.SetHTTP2Config(http2Config)
+```
+
+## Middleware Configuration
+
+### Logger Middleware Configuration
+
+```go
+type LoggerMiddlewareConfig struct {
+    Logger                *Logger
+    SkipPaths             []string
+    LogRequestBody        bool
+    LogResponseBody       bool
+    LogQueryParams        bool
+    LogHeaders            bool
+    ExcludeHeaders        []string
+    CustomFields          func(*Context) map[string]interface{}
+    SlowRequestThreshold  time.Duration
+}
+
+// Example usage
+logConfig := blaze.DefaultLoggerMiddlewareConfig()
+logConfig.SlowRequestThreshold = 2 * time.Second
+logConfig.SkipPaths = []string{"/health", "/metrics"}
+logConfig.LogHeaders = true
+logConfig.ExcludeHeaders = []string{"Authorization", "Cookie"}
+
+app.Use(blaze.LoggerMiddlewareWithConfig(logConfig))
+```
+
+### CORS Configuration
+
+```go
+type CORSOptions struct {
+    AllowOrigins     []string
+    AllowMethods     []string
+    AllowHeaders     []string
+    ExposeHeaders    []string
+    AllowCredentials bool
+    MaxAge           int
+}
+
+// Example usage
+corsOpts := blaze.CORSOptions{
+    AllowOrigins:     []string{"https://example.com", "https://app.example.com"},
+    AllowMethods:     []string{"GET", "POST", "PUT", "DELETE", "OPTIONS"},
+    AllowHeaders:     []string{"Origin", "Content-Type", "Authorization"},
+    ExposeHeaders:    []string{"X-Request-ID"},
+    AllowCredentials: true,
+    MaxAge:           3600,
+}
+
+app.Use(blaze.CORS(corsOpts))
+```
+
+### CSRF Configuration
+
+```go
+type CSRFOptions struct {
+    Secret            []byte
+    TokenLookup       string
+    ContextKey        string
+    CookieName        string
+    CookiePath        string
+    CookieDomain      string
+    CookieSecure      bool
+    CookieHTTPOnly    bool
+    CookieSameSite    string
+    CookieMaxAge      int
+    Expiration        time.Duration
+    TokenLength       int
+    Skipper           func(*Context) bool
+    ErrorHandler      func(*Context, error) error
+    TrustedOrigins    []string
+    CheckReferer      bool
+    SingleUse         bool
+}
+
+// Example usage
+csrfOpts := blaze.DefaultCSRFOptions()
+csrfOpts.Secret = []byte("your-32-byte-secret-key-here!!!")
+csrfOpts.CookieSecure = true  // Enable in production with HTTPS
+csrfOpts.CookieSameSite = "Strict"
+csrfOpts.TrustedOrigins = []string{"https://example.com"}
+
+app.Use(blaze.CSRF(csrfOpts))
+```
+
+### Cache Configuration
+
+```go
+type CacheOptions struct {
+    Store                   CacheStore
+    DefaultTTL              time.Duration
+    MaxAge                  time.Duration
+    MaxSize                 int64
+    MaxEntries              int
+    Algorithm               EvictionAlgorithm
+    Skipper                 func(*Context) bool
+    KeyGenerator            func(*Context) string
+    ShouldCache             func(*Context) bool
+    VaryHeaders             []string
+    Public                  bool
+    Private                 bool
+    NoCache                 bool
+    NoStore                 bool
+    MustRevalidate          bool
+    ProxyRevalidate         bool
+    Immutable               bool
+    EnableCompression       bool
+    CompressionLevel        int
+    CleanupInterval         time.Duration
+    EnableBackgroundCleanup bool
+    WarmupURLs              []string
+    EnableHeaders           bool
+    HeaderPrefix            string
+}
+
+// Example usage
+cacheOpts := blaze.DefaultCacheOptions()
+cacheOpts.DefaultTTL = 10 * time.Minute
+cacheOpts.MaxSize = 500 * 1024 * 1024  // 500MB
+cacheOpts.MaxEntries = 50000
+cacheOpts.Public = true
+cacheOpts.VaryHeaders = []string{"Accept-Encoding", "Accept-Language"}
+
+app.Use(blaze.Cache(cacheOpts))
+
+// Or use preset configurations
+app.Use(blaze.CacheStatic())  // For static files
+app.Use(blaze.CacheAPI(2 * time.Minute))  // For API endpoints
+```
+
+### Compression Configuration
+
+```go
+type CompressionConfig struct {
+    Level                 CompressionLevel
+    MinLength             int
+    IncludeContentTypes   []string
+    ExcludeContentTypes   []string
+    EnableGzip            bool
+    EnableDeflate         bool
+    EnableBrotli          bool
+    ExcludePaths          []string
+    ExcludeExtensions     []string
+    EnableForHTTPS        bool
+}
+
+// Example usage
+compressionConfig := blaze.DefaultCompressionConfig()
+compressionConfig.Level = blaze.CompressionLevelBest
+compressionConfig.MinLength = 1024  // Only compress responses > 1KB
+compressionConfig.IncludeContentTypes = []string{
+    "text/html",
+    "text/css",
+    "application/javascript",
+    "application/json",
+}
+compressionConfig.ExcludePaths = []string{"/api/stream"}
+
+app.Use(blaze.CompressWithConfig(compressionConfig))
+```
+
+### Body Limit Configuration
+
+```go
+type BodyLimitConfig struct {
+    MaxSize          int64
+    ErrorMessage     string
+    SkipPaths        []string
+    SkipContentTypes []string
+}
+
+// Example usage
+bodyLimitConfig := blaze.DefaultBodyLimitConfig()
+bodyLimitConfig.MaxSize = 10 * 1024 * 1024  // 10MB
+bodyLimitConfig.SkipPaths = []string{"/api/upload"}
+
+app.Use(blaze.BodyLimitWithConfig(bodyLimitConfig))
+
+// Or use convenience methods
+app.Use(blaze.BodyLimitMB(5))  // 5MB limit
+app.Use(blaze.BodyLimitKB(500))  // 500KB limit
+```
+
+### Rate Limiting Configuration
+
+```go
+type RateLimitOptions struct {
+    MaxRequests      int
+    Window           time.Duration
+    KeyGenerator     func(*Context) string
+    Handler          func(*Context) error
+    SkipSuccessful   bool
+    SkipFailed       bool
+}
+
+// Example usage
+rateLimitOpts := blaze.RateLimitOptions{
+    MaxRequests: 100,
+    Window:      time.Minute,
+    KeyGenerator: func(c *blaze.Context) string {
+        return c.IP()  // Rate limit by IP
+    },
+    Handler: func(c *blaze.Context) error {
+        return c.Status(429).JSON(blaze.Map{
+            "error": "Too many requests",
+        })
+    },
+}
+
+app.Use(blaze.RateLimitMiddleware(rateLimitOpts))
+```
+
+### Error Handling Configuration
+
+```go
+type ErrorHandlerConfig struct {
+    EnableStackTrace    bool
+    IncludeStackTrace   bool
+    CustomErrorHandler  func(*Context, error) error
+    Logger              *Logger
+}
+
+// Example usage
+errorConfig := blaze.DefaultErrorHandlerConfig()
+errorConfig.EnableStackTrace = true
+errorConfig.CustomErrorHandler = func(c *blaze.Context, err error) error {
+    // Custom error handling logic
+    return c.Status(500).JSON(blaze.Map{
+        "error": err.Error(),
+        "timestamp": time.Now(),
+    })
+}
+
+app.UseErrorHandler(errorConfig)
+```
+
+### Multipart Form Configuration
+
+```go
+type MultipartConfig struct {
+    MaxMemory    int64
+    MaxFiles     int
+    TempDir      string
+    KeepInMemory bool
+}
+
+// Example usage
+multipartConfig := blaze.DefaultMultipartConfig()
+multipartConfig.MaxMemory = 10 * 1024 * 1024  // 10MB
+multipartConfig.MaxFiles = 10
+multipartConfig.TempDir = "/tmp/uploads"
+
+app.Use(blaze.MultipartMiddleware(multipartConfig))
+```
+
+## Router Configuration
+
+### Router Configuration Structure
+
+```go
+type RouterConfig struct {
+    CaseSensitive          bool
+    StrictSlash            bool
+    RedirectSlash          bool
+    UseEscapedPath         bool
+    HandleMethodNotAllowed bool
+    HandleOPTIONS          bool
+}
+
+// Example usage
+routerConfig := blaze.DefaultRouterConfig()
+routerConfig.CaseSensitive = true
+routerConfig.StrictSlash = true
+
+router := blaze.NewRouter(routerConfig)
+```
+
+### Static File Configuration
+
+```go
+type StaticConfig struct {
+    Root            string
+    Index           string
+    Browse          bool
+    Compress        bool
+    ByteRange       bool
+    CacheDuration   time.Duration
+    NotFoundHandler HandlerFunc
+    Modify          func(*Context) error
+    GenerateETag    bool
+    Exclude         []string
+    MIMETypes       map[string]string
+}
+
+// Example usage
+staticConfig := blaze.DefaultStaticConfig("./public")
+staticConfig.Browse = false  // Disable directory browsing
+staticConfig.Compress = true
+staticConfig.CacheDuration = 24 * time.Hour
+staticConfig.GenerateETag = true
+
+app.Use("/static", blaze.StaticFS(staticConfig))
+```
+
+### WebSocket Configuration
+
+```go
+type WebSocketConfig struct {
+    ReadBufferSize   int
+    WriteBufferSize  int
+    CheckOrigin      func(ctx *fasthttp.RequestCtx) bool
+    ReadTimeout      time.Duration
+    WriteTimeout     time.Duration
+    PingInterval     time.Duration
+    PongTimeout      time.Duration
+    MaxMessageSize   int64
+    CompressionLevel int
+}
+
+// Example usage
+wsConfig := blaze.DefaultWebSocketConfig()
+wsConfig.MaxMessageSize = 10 * 1024 * 1024  // 10MB
+wsConfig.PingInterval = 30 * time.Second
+wsConfig.CheckOrigin = func(ctx *fasthttp.RequestCtx) bool {
+    origin := string(ctx.Request.Header.Peek("Origin"))
+    return origin == "https://example.com"
+}
+
+app.WebSocketWithConfig("/ws", handler, wsConfig)
 ```
 
 ## Environment Variables
@@ -421,6 +766,7 @@ func createMicroserviceApp() *blaze.App {
     app.Use(blaze.Logger())
     app.Use(blaze.Recovery())
     app.Use(blaze.ShutdownAware())
+    app.Use(blaze.BodyLimitMB(1))
     
     return app
 }
@@ -452,6 +798,21 @@ func createAPIGateway() *blaze.App {
     }
     app.SetHTTP2Config(http2Config)
     
+    // Middleware stack
+    app.Use(blaze.LoggerMiddleware())
+    app.Use(blaze.Recovery())
+    app.Use(blaze.RequestIDMiddleware())
+    app.Use(blaze.CORS(blaze.CORSOptions{
+        AllowOrigins: []string{"https://app.example.com"},
+        AllowMethods: []string{"GET", "POST", "PUT", "DELETE"},
+    }))
+    app.Use(blaze.RateLimitMiddleware(blaze.RateLimitOptions{
+        MaxRequests: 1000,
+        Window:      time.Minute,
+    }))
+    app.Use(blaze.Compress())
+    app.Use(blaze.Cache(blaze.DefaultCacheOptions()))
+    
     return app
 }
 ```
@@ -469,13 +830,20 @@ func createDevelopmentApp() *blaze.App {
     app.EnableAutoTLS("localhost", "127.0.0.1", "myapp.local")
     
     // Development middleware
-    app.Use(blaze.Logger())
+    app.Use(blaze.LoggerMiddleware())
     app.Use(blaze.Recovery())
-    app.Use(blaze.CORSWithConfig(&blaze.CORSConfig{
-        AllowOrigins: []string{"*"},
-        AllowMethods: []string{"*"},
-        AllowHeaders: []string{"*"},
+    app.Use(blaze.CORS(blaze.CORSOptions{
+        AllowOrigins:     []string{"*"},
+        AllowMethods:     []string{"*"},
+        AllowHeaders:     []string{"*"},
+        AllowCredentials: true,
     }))
+    
+    // Detailed error responses
+    errorConfig := blaze.DevelopmentErrorHandlerConfig()
+    errorConfig.EnableStackTrace = true
+    errorConfig.IncludeStackTrace = true
+    app.UseErrorHandler(errorConfig)
     
     return app
 }
@@ -509,11 +877,57 @@ func createHighPerformanceApp() *blaze.App {
     }
     app.SetHTTP2Config(http2Config)
     
-    // Add performance middleware
-    app.Use(blaze.Cache(blaze.NewMemoryStore(), &blaze.CacheOptions{
-        MaxAge: 300 * time.Second, // 5 minutes
-        Public: true,
+    // Performance middleware
+    app.Use(blaze.Cache(blaze.ProductionCacheOptions()))
+    app.Use(blaze.CompressWithLevel(blaze.CompressionLevelBest))
+    app.Use(blaze.BodyLimitMB(1))
+    
+    return app
+}
+```
+
+### Full-Stack Application Configuration
+
+```go
+func createFullStackApp() *blaze.App {
+    config := blaze.ProductionConfig()
+    app := blaze.NewWithConfig(config)
+    
+    // TLS configuration
+    tlsConfig := &blaze.TLSConfig{
+        CertFile:   "certs/server.crt",
+        KeyFile:    "certs/server.key",
+        MinVersion: tls.VersionTLS12,
+    }
+    app.SetTLSConfig(tlsConfig)
+    
+    // Global middleware
+    app.Use(blaze.LoggerMiddleware())
+    app.Use(blaze.Recovery())
+    app.Use(blaze.RequestIDMiddleware())
+    app.Use(blaze.CompressWithLevel(blaze.CompressionLevelBest))
+    
+    // Static files
+    staticConfig := blaze.DefaultStaticConfig("./public")
+    staticConfig.CacheDuration = 24 * time.Hour
+    staticConfig.GenerateETag = true
+    app.Use("/static", blaze.StaticFS(staticConfig))
+    
+    // API routes with specific middleware
+    api := app.Group("/api/v1")
+    api.Use(blaze.CORS(blaze.CORSOptions{
+        AllowOrigins: []string{"https://example.com"},
     }))
+    api.Use(blaze.BodyLimitMB(10))
+    api.Use(blaze.RateLimitMiddleware(blaze.RateLimitOptions{
+        MaxRequests: 100,
+        Window:      time.Minute,
+    }))
+    api.Use(blaze.CacheAPI(2 * time.Minute))
+    
+    // CSRF protection for web routes
+    csrfOpts := blaze.ProductionCSRFOptions([]byte("your-secret-key"))
+    app.Use(blaze.CSRF(csrfOpts))
     
     return app
 }

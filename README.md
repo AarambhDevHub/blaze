@@ -32,39 +32,40 @@ Memory Usage:  Ultra-low footprint
 
 ### 🔥 Core Performance
 - **Lightning Fast**: Built on FastHTTP - 190K+ req/sec with caching, 182K+ req/sec sustained throughput
-- **Intelligent Caching**: Built-in cache middleware for 42% faster data transfer and reduced latency
+- **Intelligent Caching**: Built-in cache middleware with LRU/LFU/FIFO/Random eviction strategies
 - **Zero-Copy**: Optimized memory usage with minimal allocations
 - **HTTP/2 & h2c**: Full HTTP/2 support with server push capabilities
 - **TLS/HTTPS**: Auto-TLS, custom certificates, and development-friendly SSL
 
 ### 🛡️ Production Ready
-- **Type Safety**: Full compile-time type checking and validation
-- **Graceful Shutdown**: Clean shutdown with connection draining
-- **Middleware Stack**: Composable middleware with built-in security
-- **Error Handling**: Comprehensive error handling and recovery
+- **Type Safety**: Full compile-time type checking and validation with go-playground/validator
+- **Graceful Shutdown**: Clean shutdown with connection draining and context awareness
+- **Middleware Stack**: Composable middleware with CORS, CSRF, rate limiting, compression
+- **Error Handling**: Comprehensive error handling with recovery and stack traces
 
 ### 📁 Advanced Features
-- **Multipart Forms**: Enterprise file upload handling with validation
-- **WebSockets**: Real-time communication with connection management
-- **Form Binding**: Automatic struct binding with validation tags
-- **Content Negotiation**: JSON, HTML, text, and custom content types
+- **Struct-Based Binding**: Bind multipart forms, JSON, and form data to structs with validation tags
+- **File Upload System**: Single/multiple file uploads with validation and unique filename generation
+- **WebSockets**: Real-time communication with connection management and broadcasting
+- **Static File Serving**: Advanced configuration with caching, compression, ETag, and range requests
+- **Validation System**: Integrated validation with automatic error formatting
 
 ### 🔧 Developer Experience
-- **Hot Reload**: Development-friendly features and debugging
-- **Route Groups**: Organized API versioning and modular design
-- **Configuration**: Environment-specific configs (dev, staging, production)
-- **Extensible**: Plugin architecture for custom functionality
+- **All HTTP Methods**: GET, POST, PUT, DELETE, PATCH, HEAD, OPTIONS, CONNECT, TRACE, ANY, Match
+- **Route Constraints**: Integer, UUID, regex, and custom parameter validation
+- **Route Groups**: Organized API versioning with shared middleware
+- **Configuration Profiles**: Environment-specific configs (dev, staging, production)
+- **Comprehensive Context**: Rich request/response handling with locals, timeouts, and shutdown awareness
 
 ## 📦 Installation
 
-```bash
-go mod init your-project
+```go
 go get github.com/AarambhDevHub/blaze
 ```
 
 ## 🚀 Quick Start
 
-### Simple Server
+### Simple Server with Validation
 ```go
 package main
 
@@ -80,17 +81,26 @@ func main() {
         return c.JSON(blaze.Map{
             "message": "Hello, Blaze! 🔥",
             "status":  "success",
-            "version": "v1.0.0",
+            "version": "v0.1.3",
         })
     })
 
-    app.GET("/users/:id", func(c *blaze.Context) error {
-        id := c.Param("id")
-        return c.JSON(blaze.Map{
-            "user_id": id,
-            "method":  c.Method(),
-            "path":    c.Path(),
-        })
+    // Route with validation
+    type User struct {
+        Name  string `json:"name" validate:"required,min=2,max=100"`
+        Email string `json:"email" validate:"required,email"`
+        Age   int    `json:"age" validate:"gte=18,lte=100"`
+    }
+
+    app.POST("/users", func(c *blaze.Context) error {
+        var user User
+        
+        // Bind and validate in one call
+        if err := c.BindJSONAndValidate(&user); err != nil {
+            return c.Status(400).JSON(blaze.Map{"error": err.Error()})
+        }
+        
+        return c.Status(201).JSON(user)
     })
 
     log.Printf("🔥 Blaze server starting on http://localhost:8080")
@@ -111,83 +121,104 @@ func main() {
 
     app := blaze.NewWithConfig(config)
 
-    // Enable auto-TLS for development
+    // Enable auto-TLS
     app.EnableAutoTLS("yourdomain.com", "www.yourdomain.com")
 
-    // Add production middleware with caching
-    app.Use(blaze.Logger())
+    // Production middleware stack
     app.Use(blaze.Recovery())
-    app.Use(blaze.CORS())
-    app.Use(blaze.Security())
-    app.Use(blaze.Cache()) // 🚀 Enable built-in cache for 42% better performance
+    app.Use(blaze.LoggerMiddleware())
+    app.Use(blaze.RequestIDMiddleware())
+    app.Use(blaze.CORS(blaze.CORSOptions{
+        AllowOrigins: []string{"https://yourdomain.com"},
+        AllowMethods: []string{"GET", "POST", "PUT", "DELETE"},
+    }))
+    app.Use(blaze.CSRF(blaze.ProductionCSRFOptions([]byte("secret"))))
+    app.Use(blaze.RateLimitMiddleware(blaze.RateLimitOptions{
+        MaxRequests: 1000,
+        Window:      time.Hour,
+    }))
+    app.Use(blaze.CompressWithLevel(blaze.CompressionLevelBest))
+    app.Use(blaze.Cache(blaze.ProductionCacheOptions()))
 
     // Your routes...
 
-    log.Fatal(app.ListenAndServeGraceful())
+    log.Fatal(app.ListenAndServeGraceful(syscall.SIGINT, syscall.SIGTERM))
 }
 ```
 
 ## 📋 Core API Examples
 
-### HTTP Methods & Routing
+### All HTTP Methods & Routing
 ```go
 app := blaze.New()
 
-// RESTful routes
+// Standard RESTful routes
 app.GET("/users", getUsers)              // List users
 app.POST("/users", createUser)           // Create user  
 app.GET("/users/:id", getUser)           // Get user by ID
 app.PUT("/users/:id", updateUser)        // Update user
 app.DELETE("/users/:id", deleteUser)     // Delete user
+app.PATCH("/users/:id", patchUser)       // Partial update
+app.HEAD("/users/:id", checkUser)        // Headers only
+app.OPTIONS("/users", optionsUsers)      // CORS preflight
 
-// Route parameters
-app.GET("/users/:id/posts/:slug", getUserPost)
+// Extended HTTP methods
+app.CONNECT("/tunnel/:target", tunnelHandler)  // Tunnel connections
+app.TRACE("/debug", traceHandler)              // Request tracing
 
-// Query parameters
-app.GET("/search", func(c *blaze.Context) error {
-    query := c.Query("q")
-    page := c.QueryIntDefault("page", 1)
-    limit := c.QueryIntDefault("limit", 10)
-
+// ANY route (handles all methods)
+app.ANY("/api/health", func(c *blaze.Context) error {
     return c.JSON(blaze.Map{
-        "query":   query,
-        "page":    page,
-        "limit":   limit,
-        "results": searchResults(query, page, limit),
+        "status": "healthy",
+        "method": c.Method(),
     })
 })
+
+// Match specific methods
+app.Match([]string{"GET", "POST", "PUT"}, "/api/data", dataHandler)
+
+// Route parameters with constraints
+app.GET("/users/:id", getUserHandler,
+    blaze.WithIntConstraint("id"))
+
+app.GET("/items/:uuid", getItemHandler,
+    blaze.WithUUIDConstraint("uuid"))
+
+app.GET("/products/:sku", getProductHandler,
+    blaze.WithRegexConstraint("sku", `^[A-Z]{2}-\d{4}$`))
 
 // Wildcards
 app.GET("/static/*filepath", serveStatic)
 ```
 
-### Advanced Form Handling
+### Advanced Form Handling with Struct Binding
 ```go
 type UserProfile struct {
-    Name     string                 `form:"name,required"`
-    Email    string                 `form:"email,required"`
-    Age      int                    `form:"age,required"`
-    Avatar   *blaze.MultipartFile   `form:"avatar"`
-    IsActive bool                   `form:"is_active"`
-    Bio      string                 `form:"bio,maxsize=500"`
-    JoinedAt time.Time              `form:"joined_at"`
+    Name     string                `form:"name,required,minsize:2,maxsize:100"`
+    Email    string                `form:"email,required"`
+    Age      int                   `form:"age,required,default:18"`
+    Avatar   *blaze.MultipartFile  `form:"avatar"`
+    IsActive bool                  `form:"is_active"`
+    Bio      string                `form:"bio,maxsize:500"`
+    JoinedAt *time.Time            `form:"joined_at"`
+    Tags     []string              `form:"tags"`
 }
 
 app.POST("/profile", func(c *blaze.Context) error {
     var profile UserProfile
 
     // Automatic form binding with validation
-    if err := c.BindMultipartForm(&profile); err != nil {
-        return c.Status(400).JSON(blaze.Error(err.Error()))
+    if err := c.BindMultipartFormAndValidate(&profile); err != nil {
+        return c.Status(400).JSON(blaze.Map{"error": err.Error()})
     }
 
     // Save avatar if uploaded
     if profile.Avatar != nil {
-        savedPath, err := profile.Avatar.SaveWithUniqueFilename("uploads/")
+        savedPath, err := c.SaveUploadedFileWithUniqueFilename(profile.Avatar, "uploads/")
         if err != nil {
-            return c.Status(500).JSON(blaze.Error("Failed to save avatar"))
+            return c.Status(500).JSON(blaze.Map{"error": "Failed to save avatar"})
         }
-        // Store savedPath in database...
+        log.Printf("Avatar saved: %s", savedPath)
     }
 
     return c.JSON(blaze.Map{
@@ -197,179 +228,180 @@ app.POST("/profile", func(c *blaze.Context) error {
 })
 ```
 
-### WebSocket Support
+### WebSocket Support with Broadcasting
 ```go
-app.WebSocket("/ws", func(ws *blaze.WebSocketConnection, c *blaze.Context) error {
+type ChatHub struct {
+    clients    map[*blaze.WebSocketConnection]bool
+    broadcast  chan []byte
+    register   chan *blaze.WebSocketConnection
+    unregister chan *blaze.WebSocketConnection
+}
+
+hub := NewChatHub()
+go hub.Run()
+
+app.WebSocket("/ws/chat", func(ws *blaze.WebSocketConnection) error {
+    hub.register <- ws
+    defer func() { hub.unregister <- ws }()
+    
     for {
-        var msg blaze.Map
-        if err := ws.ReadJSON(&msg); err != nil {
+        _, message, err := ws.ReadMessage()
+        if err != nil {
             break
         }
-
-        // Echo message back
-        ws.WriteJSON(blaze.Map{
-            "echo":      msg,
-            "timestamp": time.Now(),
-            "client_ip": c.GetClientIP(),
-        })
+        hub.broadcast <- message
     }
+    
     return nil
 })
 ```
 
-### Middleware System with Performance Optimization
+### Comprehensive Middleware Stack
 ```go
-// Global middleware stack with caching
-app.Use(blaze.Logger())                     // Request logging  
-app.Use(blaze.Recovery())                   // Panic recovery
-app.Use(blaze.CORS())                      // CORS handling
-app.Use(blaze.Security())                  // Security headers
-app.Use(blaze.Cache())                     // 🚀 High-performance caching (+42% transfer speed)
-
-// Utility middleware  
-app.Use(blaze.RequestID())                 // Request ID generation
-app.Use(blaze.IPMiddleware())              // Client IP extraction
-app.Use(blaze.HTTP2Middleware())           // HTTP/2 optimization
-
-// File handling middleware
-app.Use(blaze.MultipartMiddleware(config))  // Multipart form handling
-app.Use(blaze.ImageOnlyMiddleware())        // Image upload only
-app.Use(blaze.DocumentOnlyMiddleware())     // Document upload only
-
-// Rate limiting
-app.Use(blaze.RateLimit(100, time.Minute)) // 100 requests per minute
-
-// Custom middleware
-app.Use(func(next blaze.HandlerFunc) blaze.HandlerFunc {
-    return func(c *blaze.Context) error {
-        start := time.Now()
-
-        // Process request
-        err := next(c)
-
-        // Log duration
-        duration := time.Since(start)
-        log.Printf("Request took %v", duration)
-
-        return err
-    }
-})
+// Global middleware with all features
+app.Use(blaze.Recovery())                       // Panic recovery with stack traces
+app.Use(blaze.LoggerMiddlewareWithConfig(logConfig))  // Configurable logging
+app.Use(blaze.RequestIDMiddleware())           // Unique request IDs
+app.Use(blaze.CORS(corsOpts))                  // CORS with fine-grained control
+app.Use(blaze.CSRF(csrfOpts))                  // CSRF protection
+app.Use(blaze.RateLimitMiddleware(rateOpts))   // Rate limiting per IP
+app.Use(blaze.BodyLimitMB(10))                 // Request body size limits
+app.Use(blaze.CompressWithLevel(9))            // Gzip/Deflate/Brotli compression
+app.Use(blaze.Cache(cacheOpts))                // LRU/LFU/FIFO/Random caching
+app.Use(blaze.ShutdownAware())                 // Graceful shutdown support
 
 // Route-specific middleware
-auth := func(next blaze.HandlerFunc) blaze.HandlerFunc {
-    return func(c *blaze.Context) error {
-        token := c.Header("Authorization")
-        if !validateToken(token) {
-            return c.Status(401).JSON(blaze.Error("Unauthorized"))
-        }
-        return next(c)
-    }
-}
-
-app.GET("/protected", auth(protectedHandler))
+app.GET("/protected", protectedHandler,
+    blaze.WithMiddleware(authMiddleware),
+    blaze.WithMiddleware(rateLimitMiddleware))
 ```
 
 ### Route Groups & API Versioning
 ```go
-// API v1
+// API v1 with shared middleware
 v1 := app.Group("/api/v1")
-v1.Use(corsMiddleware())
-v1.Use(authMiddleware())
+v1.Use(blaze.LoggerMiddleware())
+v1.Use(blaze.Auth(tokenValidator))
+v1.Use(blaze.RateLimitMiddleware(rateLimitOpts))
 
-v1.GET("/users", getUsers)
+v1.GET("/users", listUsers)
 v1.POST("/users", createUser)
-v1.GET("/users/:id", getUser)
+v1.GET("/users/:id", getUser, blaze.WithIntConstraint("id"))
 
-// Admin routes
+// Admin nested group
 admin := v1.Group("/admin")
-admin.Use(adminMiddleware())
+admin.Use(RequireAdminMiddleware())
 
 admin.GET("/stats", getAdminStats)
 admin.POST("/users/:id/ban", banUser)
+admin.ANY("/system/*path", adminSystemHandler)
 
 // API v2 with different structure
 v2 := app.Group("/api/v2")
-v2.GET("/profiles", getProfiles) // Different endpoint structure
+v2.Use(authMiddleware)
+v2.Use(validationMiddleware)
+
+v2.GET("/profiles", getProfiles)
+v2.CONNECT("/stream/:id", streamConnection)
+v2.TRACE("/debug/:session", debugSession)
 ```
 
-### File Uploads & Downloads
+### File Uploads & Static Serving
 ```go
 // Configure multipart handling
 multipartConfig := blaze.ProductionMultipartConfig()
 multipartConfig.MaxFileSize = 10 << 20  // 10MB
 multipartConfig.MaxFiles = 5
+multipartConfig.AllowedExtensions = []string{".jpg", ".png", ".pdf"}
+
 app.Use(blaze.MultipartMiddleware(multipartConfig))
 
-// Single file upload
+// Single file upload with validation
 app.POST("/upload", func(c *blaze.Context) error {
     file, err := c.FormFile("document")
     if err != nil {
-        return c.Status(400).JSON(blaze.Error("No file uploaded"))
+        return c.Status(400).JSON(blaze.Map{"error": "No file uploaded"})
     }
 
     // Validate file type
     if !file.IsDocument() {
-        return c.Status(400).JSON(blaze.Error("Only documents allowed"))
+        return c.Status(400).JSON(blaze.Map{"error": "Only documents allowed"})
     }
 
     // Save with unique filename
     path, err := c.SaveUploadedFileWithUniqueFilename(file, "uploads/")
     if err != nil {
-        return c.Status(500).JSON(blaze.Error("Save failed"))
+        return c.Status(500).JSON(blaze.Map{"error": "Save failed"})
     }
 
     return c.JSON(blaze.Map{
-        "message":     "File uploaded successfully",
-        "filename":    file.Filename,
-        "saved_path":  path,
-        "size":        file.Size,
+        "filename":     file.Filename,
+        "saved_path":   path,
+        "size":         file.Size,
         "content_type": file.ContentType,
     })
 })
 
+// Static file serving with advanced configuration
+staticConfig := blaze.DefaultStaticConfig("./public")
+staticConfig.Compress = true
+staticConfig.CacheDuration = 24 * time.Hour
+staticConfig.GenerateETag = true
+staticConfig.ByteRange = true  // Enable range requests
+
+app.StaticFS("/static", staticConfig)
+
 // File download with range support
 app.GET("/download/:filename", func(c *blaze.Context) error {
-    filename := c.Param("filename")
-    filepath := "uploads/" + filename
-
+    filepath := "uploads/" + c.Param("filename")
+    
     if !c.FileExists(filepath) {
-        return c.Status(404).JSON(blaze.Error("File not found"))
+        return c.Status(404).JSON(blaze.Map{"error": "File not found"})
     }
-
-    // Stream file with range request support
+    
+    // Stream file with range request support for videos
     return c.StreamFile(filepath)
 })
 ```
 
-### HTTP/2 & TLS Configuration
+### HTTP/2 with Server Push
 ```go
-// HTTP/2 with TLS
+// HTTP/2 configuration
 config := blaze.ProductionConfig()
 config.EnableHTTP2 = true
 config.EnableTLS = true
-config.RedirectHTTPToTLS = true
 
 app := blaze.NewWithConfig(config)
 
 // Configure TLS
-tlsConfig := blaze.DefaultTLSConfig()
-tlsConfig.CertFile = "server.crt"
-tlsConfig.KeyFile = "server.key"
+tlsConfig := &blaze.TLSConfig{
+    CertFile: "server.crt",
+    KeyFile:  "server.key",
+    MinVersion: tls.VersionTLS12,
+    NextProtos: []string{"h2", "http/1.1"},
+}
 app.SetTLSConfig(tlsConfig)
 
 // Configure HTTP/2
-http2Config := blaze.DefaultHTTP2Config()
-http2Config.MaxConcurrentStreams = 1000
-http2Config.EnablePush = true
+http2Config := &blaze.HTTP2Config{
+    Enabled:              true,
+    MaxConcurrentStreams: 1000,
+    EnablePush:           true,
+}
 app.SetHTTP2Config(http2Config)
 
 // Server push example
 app.GET("/", func(c *blaze.Context) error {
-    // Push critical resources
-    c.PushResources(map[string]string{
-        "/static/app.css": "style",
-        "/static/app.js":  "script", 
-    })
+    if c.IsHTTP2() {
+        // Push critical resources
+        c.PushResources(map[string]string{
+            "/static/app.css": "style",
+            "/static/app.js":  "script",
+            "/static/logo.png": "image",
+        })
+        
+        log.Printf("Processing on HTTP/2 stream %d", c.StreamID())
+    }
 
     return c.HTML(`<!DOCTYPE html>
         <html>
@@ -384,154 +416,160 @@ app.GET("/", func(c *blaze.Context) error {
 
 ## 🧪 Built-in Middleware
 
+Blaze provides a comprehensive middleware ecosystem:
+
 ```go
-import "github.com/AarambhDevHub/blaze/pkg/blaze"
+// Core Middleware
+app.Use(blaze.Recovery())                       // Panic recovery
+app.Use(blaze.LoggerMiddleware())              // Request logging
+app.Use(blaze.LoggerMiddlewareWithConfig(cfg)) // Configurable logging
 
-// Core middleware
-app.Use(blaze.Logger())                     // Request logging  
-app.Use(blaze.Recovery())                   // Panic recovery
-app.Use(blaze.CORS())                      // CORS handling
-app.Use(blaze.Security())                  // Security headers
-app.Use(blaze.Cache())                     // 🚀 High-performance caching
+// Security Middleware
+app.Use(blaze.CORS(corsOpts))                  // CORS handling
+app.Use(blaze.CSRF(csrfOpts))                  // CSRF protection
+app.Use(blaze.Auth(tokenValidator))            // Authentication
+app.Use(blaze.HTTP2Security())                 // HTTP/2 security headers
 
-// Utility middleware  
-app.Use(blaze.RequestID())                 // Request ID generation
-app.Use(blaze.IPMiddleware())              // Client IP extraction
-app.Use(blaze.HTTP2Middleware())           // HTTP/2 optimization
+// Performance Middleware
+app.Use(blaze.Cache(cacheOpts))                // LRU/LFU/FIFO/Random cache
+app.Use(blaze.Compress())                      // Gzip compression
+app.Use(blaze.CompressWithLevel(9))            // Custom compression level
+app.Use(blaze.CompressTypes("text/html"))      // Compress specific types
 
-// File handling middleware
-app.Use(blaze.MultipartMiddleware(config))  // Multipart form handling
-app.Use(blaze.ImageOnlyMiddleware())        // Image upload only
-app.Use(blaze.DocumentOnlyMiddleware())     // Document upload only
+// Request Control Middleware
+app.Use(blaze.BodyLimit(10*1024*1024))         // Body size limits
+app.Use(blaze.BodyLimitMB(10))                 // Body limit in MB
+app.Use(blaze.RateLimitMiddleware(rateOpts))   // Rate limiting
+app.Use(blaze.RequestIDMiddleware())           // Request ID generation
 
-// Rate limiting
-app.Use(blaze.RateLimit(100, time.Minute)) // 100 requests per minute
+// Specialized Middleware
+app.Use(blaze.ValidationMiddleware())          // Validation support
+app.Use(blaze.MultipartMiddleware(config))     // Multipart form handling
+app.Use(blaze.ShutdownAware())                 // Graceful shutdown
+app.Use(blaze.GracefulTimeout(30*time.Second)) // Request timeouts
+app.Use(blaze.HTTP2Info())                     // HTTP/2 protocol info
+app.Use(blaze.StreamInfo())                    // HTTP/2 stream debugging
 ```
 
 ## 📊 Performance Comparison
 
-| Framework | Req/sec | Latency | Memory | HTTP/2 | WebSockets | Cache | Notes |
+| Framework | Req/sec | Latency | Memory | HTTP/2 | Validation | Cache | Notes |
 |-----------|---------|---------|--------|---------|------------|-------|-------|
-| **Blaze (Cache)** | **190K** | **0.53ms** | **Ultra Low** | ✅ | ✅ | ✅ | **+42% transfer speed** |
+| **Blaze (Cache)** | **190K** | **0.53ms** | **Ultra Low** | ✅ | ✅ | ✅ | **+42% transfer, All features** |
 | **Blaze** | **182K** | **0.79ms** | **Ultra Low** | ✅ | ✅ | ✅ | **Production Ready** |
-| Fiber | 165K | 0.60ms | Low | ❌ | ✅ | ❌ | FastHTTP-based |
+| Fiber | 165K | 0.60ms | Low | ❌ | ❌ | ❌ | FastHTTP-based |
 | FastHTTP | 200K+ | 0.5ms | Very Low | ❌ | ❌ | ❌ | Raw performance |
-| Gin | 50K | 10ms | Medium | ❌ | ❌ | ❌ | Most popular |
-| Echo | 40K | 15ms | Medium | ❌ | ✅ | ❌ | Minimalist |
+| Gin | 50K | 10ms | Medium | ❌ | Limited | ❌ | Most popular |
+| Echo | 40K | 15ms | Medium | ❌ | Limited | ❌ | Minimalist |
 | Chi | 35K | 20ms | Low | ❌ | ❌ | ❌ | Lightweight router |
-| Gorilla | 25K | 25ms | Medium | ❌ | ✅ | ❌ | Feature-rich |
 | Go stdlib | 17K | 30ms | Medium | ✅ | ❌ | ❌ | Standard library |
 
-**🏆 Performance Leader**: Blaze with caching delivers the best real-world performance with **190K+ req/sec**, sub-millisecond latency, and comprehensive features.
+**🏆 Performance Leader**: Blaze delivers the best real-world performance with comprehensive features.
 
-## 🏗️ Project Structure
+## 🏗️ Complete Feature List
 
+### Routing & Request Handling
+- ✅ All HTTP methods: GET, POST, PUT, DELETE, PATCH, HEAD, OPTIONS, CONNECT, TRACE
+- ✅ ANY route (handles all methods)
+- ✅ Match route (handles specific multiple methods)
+- ✅ Named parameters with type conversion (`:param`)
+- ✅ Wildcard parameters (`*param`)
+- ✅ Route constraints (int, UUID, regex, custom)
+- ✅ Route groups with shared middleware
+- ✅ Named routes with priorities and tags
+- ✅ Query parameter handling with defaults
+
+### Data Binding & Validation
+- ✅ JSON body binding with validation
+- ✅ Form data binding with validation
+- ✅ Multipart form binding with struct tags
+- ✅ Automatic validation with go-playground/validator
+- ✅ Combined bind and validate methods (`BindAndValidate`, `BindJSONAndValidate`, `BindMultipartFormAndValidate`)
+- ✅ Single variable validation
+- ✅ Body size validation
+- ✅ Custom validators and struct-level validation
+
+### Response Types
+- ✅ JSON responses with helpers (OK, Created, Error, Paginate)
+- ✅ HTML responses
+- ✅ Text responses
+- ✅ File serving and downloads
+- ✅ File streaming with range requests
+- ✅ Redirects (301, 302, 307, 308)
+- ✅ Custom status codes and headers
+- ✅ Chainable response methods
+
+### Middleware (Built-in)
+- ✅ Logger with configurable options
+- ✅ Recovery with stack traces
+- ✅ CORS with fine-grained control
+- ✅ CSRF protection with tokens
+- ✅ Rate limiting (per IP or custom key)
+- ✅ Caching (LRU, LFU, FIFO, Random)
+- ✅ Compression (Gzip, Deflate, Brotli)
+- ✅ Body limits (global and per-route)
+- ✅ Authentication (token-based)
+- ✅ Request ID generation
+- ✅ Graceful shutdown awareness
+- ✅ HTTP/2 specific middleware
+
+### File Handling
+- ✅ Single file uploads
+- ✅ Multiple file uploads
+- ✅ Struct-based multipart binding with validation
+- ✅ File validation (size, type, extension)
+- ✅ Unique filename generation
+- ✅ Static file serving with advanced configuration
+- ✅ Directory browsing (configurable)
+- ✅ ETag generation
+- ✅ Byte-range requests for video streaming
+- ✅ MIME type detection
+- ✅ Compression for static files
+
+### WebSocket Support
+- ✅ WebSocket upgrade
+- ✅ Message reading/writing (text, binary)
+- ✅ JSON message support
+- ✅ Connection management
+- ✅ Broadcasting with hub pattern
+- ✅ Ping/Pong support
+- ✅ Configurable timeouts and buffer sizes
+
+### HTTP/2 Features
+- ✅ Native HTTP/2 support
+- ✅ Server push (single and multiple resources)
+- ✅ Stream ID access
+- ✅ Protocol detection
+- ✅ h2c (HTTP/2 over cleartext)
+- ✅ Configurable stream limits
+- ✅ HTTP/2 specific middleware
+
+### Security
+- ✅ TLS configuration (production and development)
+- ✅ Auto-generated self-signed certificates
+- ✅ CSRF protection with tokens
+- ✅ CORS configuration
+- ✅ Security headers
+- ✅ Directory traversal protection
+- ✅ Rate limiting
+- ✅ Body size limits
+- ✅ Input validation
+
+### Production Features
+- ✅ Graceful shutdown with context awareness
+- ✅ Health check endpoints
+- ✅ Configuration profiles (dev, prod, custom)
+- ✅ Application state management
+- ✅ Request-scoped locals
+- ✅ Comprehensive error handling
+- ✅ Logging system
+- ✅ Request timeouts with shutdown awareness
+- ✅ Metrics and monitoring hooks
+
+## 🧪 Load Testing Results
+
+### With Cache Enabled - Superior Performance
 ```
-your-project/
-├── main.go                 # Application entry point
-├── go.mod                 # Go module definition
-├── go.sum                 # Dependency checksums
-├── config/
-│   ├── config.go         # Configuration management
-│   └── environments/     # Environment-specific configs
-├── handlers/
-│   ├── users.go         # User-related handlers
-│   ├── auth.go          # Authentication handlers
-│   └── uploads.go       # File upload handlers
-├── middleware/
-│   ├── auth.go          # Authentication middleware
-│   ├── validation.go    # Request validation
-│   └── logging.go       # Custom logging
-├── models/
-│   ├── user.go          # User data structures
-│   └── response.go      # API response types
-├── services/
-│   ├── user_service.go  # Business logic
-│   └── email_service.go # External services
-├── static/              # Static assets (CSS, JS, images)
-├── templates/           # HTML templates
-├── uploads/             # File upload directory
-└── tests/
-    ├── handlers_test.go # Handler tests
-    └── integration_test.go # Integration tests
-```
-
-## 🔧 Configuration Management
-
-### Environment Configurations
-```go
-// config/config.go
-type AppConfig struct {
-    Server   ServerConfig   `json:"server"`
-    Database DatabaseConfig `json:"database"`
-    Redis    RedisConfig    `json:"redis"`
-    Upload   UploadConfig   `json:"upload"`
-    Cache    CacheConfig    `json:"cache"`
-}
-
-// Development
-func DevelopmentConfig() *AppConfig {
-    return &AppConfig{
-        Server: ServerConfig{
-            Host:        "127.0.0.1",
-            Port:        3000,
-            Development: true,
-            EnableTLS:   false,
-            EnableHTTP2: false,
-        },
-        Cache: CacheConfig{
-            Enabled:    true,
-            TTL:        300, // 5 minutes
-            MaxSize:    100, // 100MB
-        },
-        // ... other configs
-    }
-}
-
-// Production
-func ProductionConfig() *AppConfig {
-    return &AppConfig{
-        Server: ServerConfig{
-            Host:        "0.0.0.0",
-            Port:        80,
-            TLSPort:     443,
-            Development: false,
-            EnableTLS:   true,
-            EnableHTTP2: true,
-        },
-        Cache: CacheConfig{
-            Enabled:    true,
-            TTL:        3600, // 1 hour
-            MaxSize:    500,  // 500MB
-        },
-        // ... other configs
-    }
-}
-```
-
-### Environment Variables
-```go
-import "os"
-
-config := blaze.ProductionConfig()
-
-// Override from environment
-if port := os.Getenv("PORT"); port != "" {
-    if p, err := strconv.Atoi(port); err == nil {
-        config.Port = p
-    }
-}
-
-if host := os.Getenv("HOST"); host != "" {
-    config.Host = host
-}
-```
-
-## 🧪 Testing & Benchmarking
-
-### Load Testing Results
-```bash
-# With cache enabled - Superior performance
 wrk -c100 -d30s http://localhost:3000/
 Running 30s test @ http://localhost:3000/
   2 threads and 100 connections
@@ -541,8 +579,10 @@ Running 30s test @ http://localhost:3000/
   5711615 requests in 30.00s, 3.47GB read
 Requests/sec: 190376.62
 Transfer/sec:    118.38MB
+```
 
-# Without cache - Still excellent performance
+### Without Cache - Still Excellent Performance
+```
 wrk -c100 -d30s http://localhost:3000/
 Running 30s test @ http://localhost:3000/
   2 threads and 100 connections
@@ -554,53 +594,10 @@ Requests/sec: 182505.60
 Transfer/sec:     83.20MB
 ```
 
-### Additional Load Tests
-```bash
-# JSON API endpoint
-wrk -c100 -d30s -t4 -s post.lua http://localhost:8080/api/users
-
-# File upload test  
-wrk -c50 -d30s -t4 -s upload.lua http://localhost:8080/upload
-
-# WebSocket connections
-wrk -c100 -d30s -t4 --latency http://localhost:8080/ws
-```
-
-### Performance Profiling
-```bash
-# CPU profiling
-go tool pprof http://localhost:8080/debug/pprof/profile
-
-# Memory profiling  
-go tool pprof http://localhost:8080/debug/pprof/heap
-
-# Goroutine analysis
-go tool pprof http://localhost:8080/debug/pprof/goroutine
-
-# Block profiling
-go tool pprof http://localhost:8080/debug/pprof/block
-```
-
-### Unit Testing
-```go
-func TestUserHandler(t *testing.T) {
-    app := blaze.New()
-    app.GET("/users/:id", getUserHandler)
-
-    req := httptest.NewRequest("GET", "/users/123", nil)
-    resp := httptest.NewRecorder()
-
-    app.ServeHTTP(resp, req)
-
-    assert.Equal(t, 200, resp.Code)
-    // ... additional assertions
-}
-```
-
 ## 📈 Production Deployment
 
 ### Docker
-```dockerfile
+```
 FROM golang:1.21-alpine AS builder
 
 WORKDIR /app
@@ -616,14 +613,13 @@ WORKDIR /root/
 
 COPY --from=builder /app/blaze-app .
 COPY --from=builder /app/static ./static
-COPY --from=builder /app/templates ./templates
 
 EXPOSE 8080
 CMD ["./blaze-app"]
 ```
 
 ### Kubernetes
-```yaml
+```
 apiVersion: apps/v1
 kind: Deployment
 metadata:
@@ -657,84 +653,28 @@ spec:
             cpu: "500m"
 ```
 
-## 🔐 Security Best Practices
+## 📚 Documentation
 
-### Security Middleware
-```go
-// Production security stack
-app.Use(blaze.Security())           // Security headers
-app.Use(blaze.CORS())              // CORS policy
-app.Use(blaze.RateLimit(1000, time.Hour)) // Rate limiting
-app.Use(blaze.IPMiddleware())       // IP tracking
+Comprehensive documentation is available in the `/docs` directory:
 
-// Custom security middleware
-func SecurityMiddleware() blaze.MiddlewareFunc {
-    return func(next blaze.HandlerFunc) blaze.HandlerFunc {
-        return func(c *blaze.Context) error {
-            // Security headers
-            c.SetHeader("X-Content-Type-Options", "nosniff")
-            c.SetHeader("X-Frame-Options", "DENY") 
-            c.SetHeader("X-XSS-Protection", "1; mode=block")
-            c.SetHeader("Strict-Transport-Security", "max-age=31536000")
-            c.SetHeader("Content-Security-Policy", "default-src 'self'")
-
-            return next(c)
-        }
-    }
-}
-```
-
-### Input Validation
-```go
-type CreateUserRequest struct {
-    Name     string `form:"name,required,minsize=2,maxsize=50"`
-    Email    string `form:"email,required" validate:"email"`
-    Password string `form:"password,required,minsize=8"`
-    Age      int    `form:"age,required" validate:"min=13,max=120"`
-}
-
-app.POST("/users", func(c *blaze.Context) error {
-    var req CreateUserRequest
-
-    if err := c.BindMultipartForm(&req); err != nil {
-        return c.Status(400).JSON(blaze.Map{
-            "error": "Validation failed",
-            "details": err.Error(),
-        })
-    }
-
-    // Additional validation
-    if err := validate.Struct(req); err != nil {
-        return c.Status(400).JSON(blaze.Map{
-            "error": "Invalid input",
-            "details": err.Error(),
-        })
-    }
-
-    // Process validated request...
-    return c.JSON(blaze.Map{"message": "User created"})
-})
-```
-
-## 📚 Advanced Examples
-
-Check out comprehensive examples in the `/examples` directory:
-
-- **🏢 Enterprise API**: Full-featured REST API with authentication
-- **📁 File Management**: Advanced file upload/download system  
-- **🔄 Real-time Chat**: WebSocket-based chat application
-- **📊 Analytics Dashboard**: HTTP/2 server-sent events
-- **🛡️ Microservices**: Service mesh integration
-- **📱 Mobile API**: Mobile-optimized JSON API
-- **🎯 E-commerce**: Complete e-commerce backend
-- **📈 Monitoring**: Metrics, logging, and observability
+- **[Quick Start](docs/quick-start.md)** - Get started in minutes
+- **[Configuration](docs/configuration.md)** - Application configuration
+- **[Routing](docs/routing.md)** - Advanced routing with all HTTP methods
+- **[Handlers](docs/handlers.md)** - Request handlers and patterns
+- **[Middleware](docs/middleware.md)** - Built-in and custom middleware
+- **[Validation](docs/validator.md)** - Struct validation system
+- **[File Handling](docs/file-handling.md)** - File uploads and multipart forms
+- **[Static Files](docs/static-files.md)** - Static file serving
+- **[WebSockets](docs/websockets.md)** - Real-time communication
+- **[HTTP/2](docs/http2.md)** - HTTP/2 configuration and features
+- **[Examples](docs/examples.md)** - Complete application examples
 
 ## 🤝 Contributing
 
 We welcome contributions! Please see our [Contributing Guide](CONTRIBUTING.md) for details.
 
 ### Development Setup
-```bash
+```
 # Clone repository
 git clone https://github.com/AarambhDevHub/blaze.git
 cd blaze
@@ -752,52 +692,32 @@ go test -bench=. ./...
 go run examples/basic/main.go
 ```
 
-### Pull Request Process
-1. Fork the repository
-2. Create your feature branch (`git checkout -b feature/amazing-feature`)
-3. Write tests for your changes
-4. Ensure all tests pass (`go test ./...`)
-5. Run benchmarks (`go test -bench=.`)
-6. Commit your changes (`git commit -m 'Add amazing feature'`)
-7. Push to the branch (`git push origin feature/amazing-feature`)
-8. Open a Pull Request
-
 ## 📄 License
 
 This project is licensed under the MIT License - see the [LICENSE](LICENSE) file for details.
 
-## ☕ Support & Community
+## ☕ Support the Project
 
-If you find Ignitia helpful, consider supporting the project:
+If you find Blaze helpful, consider supporting its development:
 
 [![Buy Me A Coffee](https://img.shields.io/badge/Buy%20Me%20A%20Coffee-ffdd00?style=for-the-badge&logo=buy-me-a-coffee&logoColor=black)](https://buymeacoffee.com/aarambhdevhub)
-
 
 ## 👨‍💻 Author & Community
 
 **AarambhDevHub** - Building the future of Go web development
 
 - 🌐 **GitHub**: [@AarambhDevHub](https://github.com/AarambhDevHub)
-- 📺 **YouTube**: [AarambhDevHub](https://youtube.com/@aarambhdevhub) 
+- 📺 **YouTube**: [AarambhDevHub](https://youtube.com/@aarambhdevhub)
 - 💬 **Discord**: [Join our community](https://discord.gg/HDth6PfCnp)
 
 ## 🌟 Show Your Support
 
-If Blaze has helped you build amazing applications, please:
+If Blaze has helped you build amazing applications:
 
-- ⭐ **Star this repository** 
+- ⭐ **Star this repository**
 - 🐦 **Share on social media**
 - 📝 **Write about your experience**
 - 🤝 **Contribute to the project**
-
-## 📞 Support & Community
-
-Need help? Join our growing community:
-
-- 💬 **Discord Community**: Get real-time help and discuss features
-- 🐛 **Issues**: Report bugs and request features on GitHub
-- 📺 **Tutorials**: Watch video tutorials on our YouTube channel
-- 📝 **Blog**: Read articles about best practices and use cases
 
 ---
 

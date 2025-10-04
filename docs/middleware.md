@@ -2,11 +2,25 @@
 
 Middleware in the Blaze web framework provides a powerful way to intercept and process HTTP requests before they reach your route handlers. Middleware functions can modify requests, responses, perform authentication, logging, and handle cross-cutting concerns across your application.
 
+## Table of Contents
+
+- [Overview](#overview)
+- [Built-in Middleware](#built-in-middleware)
+- [Logging Middleware](#logging-middleware)
+- [Error Handling Middleware](#error-handling-middleware)
+- [Security Middleware](#security-middleware)
+- [Performance Middleware](#performance-middleware)
+- [HTTP/2 Middleware](#http2-middleware)
+- [Graceful Shutdown Middleware](#graceful-shutdown-middleware)
+- [Custom Middleware](#custom-middleware)
+- [Middleware Application](#middleware-application)
+- [Best Practices](#best-practices)
+
 ## Overview
 
 Middleware functions in Blaze follow a simple signature and can be chained together to create powerful request processing pipelines. Each middleware function receives the next handler in the chain and returns a new handler function.
 
-## Basic Middleware Signature
+### Basic Middleware Signature
 
 ```go
 type MiddlewareFunc func(HandlerFunc) HandlerFunc
@@ -18,180 +32,373 @@ All middleware functions follow this pattern where they wrap the next handler in
 
 ### Logger Middleware
 
-The Logger middleware automatically logs all incoming requests with timing information.
+Comprehensive request/response logging with configurable options:
 
 ```go
-func main() {
-    app := blaze.New()
-    
-    // Add logger middleware globally
-    app.Use(blaze.Logger())
-    
-    app.GET("/", func(c *blaze.Context) error {
-        return c.JSON(blaze.Map{"message": "Hello World"})
-    })
-    
-    app.ListenAndServe()
-}
+// Simple logger
+app.Use(blaze.Logger())
+
+// Advanced logger with configuration
+logConfig := blaze.DefaultLoggerMiddlewareConfig()
+logConfig.SlowRequestThreshold = 2 * time.Second
+logConfig.SkipPaths = []string{"/health", "/metrics"}
+logConfig.LogHeaders = true
+logConfig.ExcludeHeaders = []string{"Authorization", "Cookie"}
+logConfig.LogRequestBody = false  // Be careful with sensitive data
+logConfig.LogResponseBody = false // Can be expensive
+logConfig.LogQueryParams = true
+
+app.Use(blaze.LoggerMiddlewareWithConfig(logConfig))
 ```
 
-The logger outputs information including HTTP method, path, status code, and request duration.
+**LoggerMiddlewareConfig Options:**
+- `Logger` - Custom logger instance
+- `SkipPaths` - Paths to skip logging
+- `LogRequestBody` - Log request bodies (use carefully)
+- `LogResponseBody` - Log response bodies (expensive)
+- `LogQueryParams` - Log query parameters
+- `LogHeaders` - Log request/response headers
+- `ExcludeHeaders` - Headers to exclude from logs
+- `CustomFields` - Add custom fields to logs
+- `SlowRequestThreshold` - Log slow requests
 
 ### Recovery Middleware
 
-The Recovery middleware catches panics that occur in route handlers and returns a proper error response instead of crashing the application.
+Catches panics and returns proper error responses:
 
 ```go
+// Basic recovery
 app.Use(blaze.Recovery())
-```
 
-When a panic occurs, it logs the panic information and returns a 500 Internal Server Error JSON response.
+// Recovery with configuration
+errorConfig := blaze.DefaultErrorHandlerConfig()
+errorConfig.EnableStackTrace = true
+errorConfig.IncludeStackTrace = true  // Include in response (dev only)
+
+app.Use(blaze.RecoveryMiddleware(errorConfig))
+```
 
 ### Authentication Middleware
 
-The Auth middleware provides Bearer token authentication for protected routes.
+Bearer token authentication for protected routes:
 
 ```go
-// Define a token validator function
+// Simple token validator
 tokenValidator := func(token string) bool {
-    // Implement your token validation logic
     return token == "valid-secret-token"
 }
 
-// Apply authentication middleware
+// Global authentication
 app.Use(blaze.Auth(tokenValidator))
 
-// Or apply to specific routes
+// Route-specific authentication
 app.GET("/protected", handler, blaze.WithMiddleware(blaze.Auth(tokenValidator)))
 ```
 
-The middleware checks for the `Authorization` header with Bearer token format and validates the token using your provided validator function.
+## Security Middleware
 
 ### CORS Middleware
 
-The CORS middleware handles Cross-Origin Resource Sharing configuration.
+Handle Cross-Origin Resource Sharing:
 
 ```go
-app.Use(blaze.CORS(blaze.CORSConfig{
-    AllowOrigins:     []string{"*"},
-    AllowMethods:     []string{"GET", "POST", "PUT", "DELETE"},
-    AllowHeaders:     []string{"Content-Type", "Authorization"},
-    ExposeHeaders:    []string{"X-Total-Count"},
+corsOpts := blaze.CORSOptions{
+    AllowOrigins:     []string{"https://example.com", "https://app.example.com"},
+    AllowMethods:     []string{"GET", "POST", "PUT", "DELETE", "OPTIONS"},
+    AllowHeaders:     []string{"Origin", "Content-Type", "Authorization"},
+    ExposeHeaders:    []string{"X-Request-ID", "X-Total-Count"},
     AllowCredentials: true,
-    MaxAge:           86400, // 24 hours
+    MaxAge:           3600, // 1 hour
+}
+
+app.Use(blaze.CORS(corsOpts))
+```
+
+### CSRF Middleware
+
+Protect against Cross-Site Request Forgery attacks:
+
+```go
+// Default CSRF protection
+csrfOpts := blaze.DefaultCSRFOptions()
+csrfOpts.Secret = []byte("your-32-byte-secret-key-here!!!")
+csrfOpts.CookieSecure = true  // Enable for HTTPS
+csrfOpts.CookieSameSite = "Strict"
+csrfOpts.CheckReferer = true
+csrfOpts.TrustedOrigins = []string{"https://example.com"}
+
+app.Use(blaze.CSRF(csrfOpts))
+
+// Access CSRF token in handlers
+app.GET("/form", func(c *blaze.Context) error {
+    token := blaze.CSRFToken(c)
+    html := blaze.CSRFTokenHTML(c)  // As hidden input
+    headerValue := blaze.CSRFTokenHeader(c)
+    meta := blaze.CSRFMeta(c)  // As meta tag
+    
+    return c.HTML(html)
+})
+
+// Production CSRF configuration
+csrfOpts := blaze.ProductionCSRFOptions([]byte("production-secret"))
+app.Use(blaze.CSRF(csrfOpts))
+```
+
+**CSRF Configuration Options:**
+- `Secret` - Secret key for token generation (32 bytes)
+- `TokenLookup` - Where to find token (header/form/query)
+- `CookieName` - Cookie name for CSRF token
+- `CookieSecure` - HTTPS only (production)
+- `CookieHTTPOnly` - Prevent JavaScript access
+- `CookieSameSite` - SameSite cookie attribute
+- `Expiration` - Token expiration duration
+- `TokenLength` - Token length in bytes
+- `TrustedOrigins` - Trusted origins for CORS
+- `CheckReferer` - Validate Referer header
+- `SingleUse` - Use tokens only once (more secure)
+
+## Performance Middleware
+
+### Cache Middleware
+
+HTTP response caching with multiple strategies:
+
+```go
+// Default caching
+app.Use(blaze.Cache(blaze.DefaultCacheOptions()))
+
+// Custom cache configuration
+cacheOpts := blaze.CacheOptions{
+    DefaultTTL:            5 * time.Minute,
+    MaxAge:                1 * time.Hour,
+    MaxSize:               500 * 1024 * 1024,  // 500MB
+    MaxEntries:            50000,
+    Algorithm:             blaze.LRU,  // LRU, LFU, FIFO, Random
+    VaryHeaders:           []string{"Accept-Encoding", "Accept-Language"},
+    Public:                true,
+    EnableCompression:     true,
+    CompressionLevel:      9,
+    CleanupInterval:       5 * time.Minute,
+    EnableBackgroundCleanup: true,
+}
+
+app.Use(blaze.Cache(cacheOpts))
+
+// Static file caching
+app.Use(blaze.CacheStatic())
+
+// API response caching
+app.Use(blaze.CacheAPI(2 * time.Minute))
+
+// Custom cache key generation
+cacheOpts.KeyGenerator = func(c *blaze.Context) string {
+    userID := c.Locals("user_id")
+    return fmt.Sprintf("%s:%s:%v", c.Method(), c.Path(), userID)
+}
+
+// Custom cache predicate
+cacheOpts.ShouldCache = func(c *blaze.Context) bool {
+    return c.Response().StatusCode() == 200
+}
+
+app.Use(blaze.Cache(cacheOpts))
+
+// Cache status endpoint
+app.GET("/cache/status", blaze.CacheStatus)
+
+// Cache invalidation
+app.POST("/cache/invalidate", func(c *blaze.Context) error {
+    pattern := c.Query("pattern")
+    count := blaze.InvalidateCache(store, pattern)
+    return c.JSON(blaze.Map{"invalidated": count})
+})
+```
+
+**Cache Configuration Options:**
+- `Store` - Cache storage backend
+- `DefaultTTL` - Default time to live
+- `MaxAge` - Cache-Control max-age
+- `MaxSize` - Maximum cache size in bytes
+- `MaxEntries` - Maximum number of entries
+- `Algorithm` - Eviction algorithm (LRU, LFU, FIFO, Random)
+- `VaryHeaders` - Headers to vary cache by
+- `Public/Private` - Cache visibility
+- `NoCache/NoStore` - Cache control directives
+- `MustRevalidate` - Require revalidation
+- `Immutable` - Mark as immutable
+- `EnableCompression` - Compress cached responses
+- `CompressionLevel` - Compression level (0-9)
+
+### Compression Middleware
+
+Response compression with multiple algorithms:
+
+```go
+// Default compression
+app.Use(blaze.Compress())
+
+// Compression with specific level
+app.Use(blaze.CompressWithLevel(blaze.CompressionLevelBest))
+
+// Custom compression configuration
+compressionConfig := blaze.DefaultCompressionConfig()
+compressionConfig.Level = blaze.CompressionLevelBest
+compressionConfig.MinLength = 1024  // Only compress responses > 1KB
+compressionConfig.IncludeContentTypes = []string{
+    "text/html",
+    "text/css",
+    "text/javascript",
+    "application/json",
+    "application/xml",
+}
+compressionConfig.ExcludePaths = []string{"/api/stream"}
+compressionConfig.EnableGzip = true
+compressionConfig.EnableDeflate = true
+compressionConfig.EnableBrotli = false
+
+app.Use(blaze.CompressWithConfig(compressionConfig))
+
+// Compress only specific types
+app.Use(blaze.CompressTypes("text/html", "application/json"))
+
+// Gzip only
+app.Use(blaze.CompressGzipOnly())
+```
+
+**Compression Options:**
+- `Level` - Compression level (0-9, -1 for default)
+- `MinLength` - Minimum response size to compress
+- `IncludeContentTypes` - Content types to compress
+- `ExcludeContentTypes` - Content types to skip
+- `EnableGzip` - Enable gzip compression
+- `EnableDeflate` - Enable deflate compression
+- `EnableBrotli` - Enable brotli compression
+- `ExcludePaths` - Paths to skip compression
+- `ExcludeExtensions` - File extensions to skip
+- `EnableForHTTPS` - Enable for HTTPS (disabled by default)
+
+### Body Limit Middleware
+
+Restrict request body sizes:
+
+```go
+// Default body limit (4MB)
+app.Use(blaze.BodyLimit(10 * 1024 * 1024))  // 10MB
+
+// Convenience methods
+app.Use(blaze.BodyLimitKB(500))   // 500KB
+app.Use(blaze.BodyLimitMB(10))    // 10MB
+app.Use(blaze.BodyLimitGB(1))     // 1GB
+
+// Custom configuration
+bodyConfig := blaze.DefaultBodyLimitConfig()
+bodyConfig.MaxSize = 10 * 1024 * 1024
+bodyConfig.ErrorMessage = "File too large"
+bodyConfig.SkipPaths = []string{"/api/upload"}
+
+app.Use(blaze.BodyLimitWithConfig(bodyConfig))
+
+// Route-specific limits
+app.Use(blaze.BodyLimitForRoute(50*1024*1024, "/api/upload", "/api/media"))
+
+// Content-type specific limits
+app.Use(blaze.BodyLimitByContentType(map[string]int64{
+    "application/json": 1 * 1024 * 1024,      // 1MB for JSON
+    "multipart/form-data": 50 * 1024 * 1024,  // 50MB for files
 }))
 ```
 
 ### Rate Limiting Middleware
 
-The rate limiting middleware prevents abuse by limiting the number of requests from a single IP address.
+Prevent abuse by limiting request rates:
 
 ```go
-app.Use(blaze.RateLimit(blaze.RateLimitConfig{
-    Rate:       100,              // requests per window
-    Window:     time.Minute,      // time window
-    BurstSize:  10,               // burst allowance
-    SkipLimit:  func(c *blaze.Context) bool {
-        return c.IP() == "127.0.0.1" // skip rate limiting for localhost
+rateLimitOpts := blaze.RateLimitOptions{
+    MaxRequests:  100,              // 100 requests
+    Window:       time.Minute,      // Per minute
+    KeyGenerator: func(c *blaze.Context) string {
+        return c.IP()  // Rate limit by IP
     },
-}))
-```
+    Handler: func(c *blaze.Context) error {
+        return c.Status(429).JSON(blaze.Map{
+            "error":       "Too many requests",
+            "retry_after": 60,
+        })
+    },
+}
 
-### CSRF Middleware
+app.Use(blaze.RateLimitMiddleware(rateLimitOpts))
 
-The CSRF middleware protects against Cross-Site Request Forgery attacks.
-
-```go
-app.Use(blaze.CSRF(blaze.CSRFConfig{
-    TokenLength:    32,
-    TokenLookup:    "header:X-CSRF-Token",
-    CookieName:     "_csrf",
-    CookieSecure:   true,
-    CookieHTTPOnly: true,
-    CookieSameSite: "Strict",
-}))
+// Per-user rate limiting
+rateLimitOpts.KeyGenerator = func(c *blaze.Context) string {
+    userID := c.Locals("user_id")
+    if userID != nil {
+        return fmt.Sprintf("user:%v", userID)
+    }
+    return c.IP()
+}
 ```
 
 ### Request ID Middleware
 
-The Request ID middleware adds a unique identifier to each request for tracing and logging.
+Add unique identifiers to requests for tracing:
 
 ```go
-app.Use(blaze.RequestID())
+// Add request ID middleware
+app.Use(blaze.RequestIDMiddleware())
 
 // Access request ID in handlers
 app.GET("/", func(c *blaze.Context) error {
-    requestID := c.GetRequestID()
-    return c.JSON(blaze.Map{"request_id": requestID})
+    requestID := blaze.GetRequestID(c)
+    return c.JSON(blaze.Map{
+        "request_id": requestID,
+    })
 })
 ```
 
-### Cache Middleware
+## HTTP/2 Middleware
 
-The cache middleware provides HTTP response caching with configurable strategies.
+### HTTP/2 Info Middleware
 
-```go
-app.Use(blaze.Cache(blaze.CacheConfig{
-    Expiration:      time.Hour,
-    CleanupInterval: 10 * time.Minute,
-    MaxSize:         1000,
-    CacheControl:    "public, max-age=3600",
-}))
-```
-
-## Graceful Shutdown Middleware
-
-### Shutdown Aware Middleware
-
-The ShutdownAware middleware ensures requests are rejected during graceful shutdown.
-
-```go
-app.Use(blaze.ShutdownAware())
-```
-
-This middleware checks if the server is shutting down and returns a 503 Service Unavailable response for new requests.
-
-### Graceful Timeout Middleware
-
-The GracefulTimeout middleware adds request timeouts that respect the shutdown context.
-
-```go
-app.Use(blaze.GracefulTimeout(30 * time.Second))
-```
-
-This middleware ensures long-running requests are cancelled appropriately during shutdown.
-
-## HTTP/2 Specific Middleware
-
-### HTTP2 Info Middleware
-
-The HTTP2Info middleware adds protocol information to response headers.
+Add HTTP/2 protocol information to responses:
 
 ```go
 app.Use(blaze.HTTP2Info())
+
+// Headers added:
+// X-Protocol: HTTP/2.0 or HTTP/1.1
+// X-HTTP2-Enabled: true or false
 ```
 
-### HTTP2 Security Middleware
+### HTTP/2 Security Middleware
 
-The HTTP2Security middleware adds HTTP/2 specific security headers.
+Add HTTP/2-specific security headers:
 
 ```go
 app.Use(blaze.HTTP2Security())
-```
 
-This middleware adds security headers like `X-Content-Type-Options`, `X-Frame-Options`, `X-XSS-Protection`, and `Strict-Transport-Security` for HTTPS connections.
+// Headers added:
+// X-Content-Type-Options: nosniff
+// X-Frame-Options: DENY
+// X-XSS-Protection: 1; mode=block
+// Strict-Transport-Security: max-age=31536000; includeSubDomains
+```
 
 ### Stream Info Middleware
 
-The StreamInfo middleware adds HTTP/2 stream debugging information.
+Add HTTP/2 stream debugging information:
 
 ```go
 app.Use(blaze.StreamInfo())
+
+// Headers added:
+// X-Stream-ID: <stream_id>
+// X-Stream-Priority: <priority>
 ```
 
-### HTTP2 Metrics Middleware
+### HTTP/2 Metrics Middleware
 
-The HTTP2Metrics middleware collects HTTP/2 specific performance metrics.
+Collect HTTP/2-specific performance metrics:
 
 ```go
 app.Use(blaze.HTTP2Metrics())
@@ -199,99 +406,91 @@ app.Use(blaze.HTTP2Metrics())
 
 ### HTTP/2 Compression Middleware
 
-The CompressHTTP2 middleware enables HTTP/2 specific compression.
+Enable HTTP/2-specific compression:
 
 ```go
-app.Use(blaze.CompressHTTP2(6)) // compression level 6
+app.Use(blaze.CompressHTTP2(6))  // Compression level 6
 ```
 
-## File Upload Middleware
+## Graceful Shutdown Middleware
 
-### File Size Limit Middleware
+### Shutdown Aware Middleware
 
-The FileSizeLimitMiddleware restricts the maximum size of uploaded files.
+Reject requests during graceful shutdown:
 
 ```go
-app.Use(blaze.FileSizeLimitMiddleware(50 << 20)) // 50MB limit
+app.Use(blaze.ShutdownAware())
+
+// Returns 503 Service Unavailable during shutdown
 ```
 
-### File Type Middleware
+### Graceful Timeout Middleware
 
-The FileTypeMiddleware restricts uploads to specific file types.
+Add request timeouts that respect shutdown context:
 
 ```go
-app.Use(blaze.FileTypeMiddleware(
-    []string{".jpg", ".png", ".pdf"},                           // allowed extensions
-    []string{"image/jpeg", "image/png", "application/pdf"},     // allowed MIME types
-))
+app.Use(blaze.GracefulTimeout(30 * time.Second))
+
+// Automatically cancels requests during shutdown
 ```
 
-### Image Only Middleware
+## Validation Middleware
 
-The ImageOnlyMiddleware restricts uploads to image files only.
+### Validation Middleware
+
+Enable struct validation for request binding:
 
 ```go
-app.Use(blaze.ImageOnlyMiddleware())
+app.Use(blaze.ValidationMiddleware())
+
+// Works with validation tags on structs
+type User struct {
+    Name  string `json:"name" validate:"required,min=2,max=100"`
+    Email string `json:"email" validate:"required,email"`
+    Age   int    `json:"age" validate:"gte=18,lte=100"`
+}
 ```
 
-### Document Only Middleware
+## Multipart Middleware
 
-The DocumentOnlyMiddleware restricts uploads to document files only.
+### Multipart Form Middleware
+
+Configure multipart form parsing:
 
 ```go
-app.Use(blaze.DocumentOnlyMiddleware())
+multipartConfig := blaze.DefaultMultipartConfig()
+multipartConfig.MaxMemory = 10 * 1024 * 1024  // 10MB
+multipartConfig.MaxFiles = 10
+multipartConfig.AllowedExtensions = []string{".jpg", ".png", ".pdf"}
+multipartConfig.AllowedMimeTypes = []string{
+    "image/jpeg",
+    "image/png",
+    "application/pdf",
+}
+
+app.Use(blaze.MultipartMiddleware(multipartConfig))
 ```
-
-### Multipart Logging Middleware
-
-The MultipartLoggingMiddleware logs details about multipart form uploads.
-
-```go
-app.Use(blaze.MultipartLoggingMiddleware())
-```
-
-## IP and Network Middleware
-
-### IP Middleware
-
-The IPMiddleware extracts and stores client IP information for easy access in handlers.
-
-```go
-app.Use(blaze.IPMiddleware())
-
-// Access IP information in handlers
-app.GET("/", func(c *blaze.Context) error {
-    clientIP := c.GetClientIP()
-    realIP := c.GetRealIP()
-    remoteAddr := c.GetRemoteAddr()
-    
-    return c.JSON(blaze.Map{
-        "client_ip":   clientIP,
-        "real_ip":     realIP,
-        "remote_addr": remoteAddr,
-    })
-})
-```
-
-This middleware automatically extracts client IP addresses from various headers like `X-Forwarded-For`, `X-Real-IP`, and `CF-Connecting-IP`.
 
 ## Custom Middleware
 
 ### Creating Custom Middleware
 
-You can create custom middleware by following the middleware signature pattern.
+Follow the middleware signature pattern:
 
 ```go
+// Simple custom middleware
 func CustomHeaderMiddleware(headerName, headerValue string) blaze.MiddlewareFunc {
     return func(next blaze.HandlerFunc) blaze.HandlerFunc {
         return func(c *blaze.Context) error {
-            // Add custom header before processing
+            // Before handler execution
             c.SetHeader(headerName, headerValue)
             
-            // Process the request
+            // Execute handler
             err := next(c)
             
-            // Perform any cleanup after processing
+            // After handler execution
+            // Perform any cleanup
+            
             return err
         }
     }
@@ -303,7 +502,7 @@ app.Use(CustomHeaderMiddleware("X-API-Version", "v1.0.0"))
 
 ### Middleware with Configuration
 
-Create configurable middleware using configuration structs.
+Create configurable middleware using configuration structs:
 
 ```go
 type CustomConfig struct {
@@ -319,7 +518,7 @@ func CustomMiddleware(config CustomConfig) blaze.MiddlewareFunc {
                 return next(c)
             }
             
-            // Apply custom logic based on configuration
+            // Apply custom logic
             c.SetLocals("custom_value", config.Value)
             
             // Add timeout if specified
@@ -337,7 +536,7 @@ func CustomMiddleware(config CustomConfig) blaze.MiddlewareFunc {
                     return err
                 case <-ctx.Done():
                     return c.Status(408).JSON(blaze.Map{
-                        "error": "Request timeout"
+                        "error": "Request timeout",
                     })
                 }
             }
@@ -348,64 +547,53 @@ func CustomMiddleware(config CustomConfig) blaze.MiddlewareFunc {
 }
 ```
 
-## Applying Middleware
+### Authentication Middleware Example
 
-### Global Middleware
-
-Apply middleware to all routes by using the `Use` method on the app instance.
+Complete authentication middleware with JWT:
 
 ```go
-app := blaze.New()
-
-// These middleware apply to all routes
-app.Use(blaze.Logger())
-app.Use(blaze.Recovery())
-app.Use(blaze.CORS(corsConfig))
+func JWTAuthMiddleware(secret string) blaze.MiddlewareFunc {
+    return func(next blaze.HandlerFunc) blaze.HandlerFunc {
+        return func(c *blaze.Context) error {
+            // Get token from header
+            auth := c.Header("Authorization")
+            if auth == "" {
+                return c.Status(401).JSON(blaze.Map{
+                    "error": "Missing authorization header",
+                })
+            }
+            
+            // Extract Bearer token
+            if len(auth) < 7 || auth[:7] != "Bearer " {
+                return c.Status(401).JSON(blaze.Map{
+                    "error": "Invalid authorization format",
+                })
+            }
+            
+            token := auth[7:]
+            
+            // Validate JWT token
+            claims, err := validateJWT(token, secret)
+            if err != nil {
+                return c.Status(401).JSON(blaze.Map{
+                    "error": "Invalid token",
+                })
+            }
+            
+            // Store user info in context
+            c.SetLocals("user_id", claims.UserID)
+            c.SetLocals("email", claims.Email)
+            c.SetLocals("role", claims.Role)
+            
+            return next(c)
+        }
+    }
+}
 ```
 
-### Route-Specific Middleware
+### Error Handling Middleware
 
-Apply middleware to specific routes using route options.
-
-```go
-app.GET("/admin", adminHandler, 
-    blaze.WithMiddleware(blaze.Auth(tokenValidator)),
-    blaze.WithMiddleware(adminOnlyMiddleware),
-)
-```
-
-### Group Middleware
-
-Apply middleware to route groups.
-
-```go
-api := app.Group("/api/v1")
-api.Use(blaze.Auth(tokenValidator))
-api.Use(blaze.RateLimit(rateLimitConfig))
-
-// All routes in this group will have the middleware applied
-api.GET("/users", getUsersHandler)
-api.POST("/users", createUserHandler)
-```
-
-## Middleware Execution Order
-
-Middleware executes in the order it was registered, creating an "onion" pattern where each middleware can execute code before and after the inner middleware and handlers.
-
-```go
-app.Use(middleware1) // Executes first (outer)
-app.Use(middleware2) // Executes second (middle)
-app.Use(middleware3) // Executes third (inner)
-
-// Execution flow:
-// middleware1 (before) -> middleware2 (before) -> middleware3 (before) 
-// -> handler 
-// -> middleware3 (after) -> middleware2 (after) -> middleware1 (after)
-```
-
-## Error Handling in Middleware
-
-Middleware can handle and transform errors from downstream handlers.
+Transform and log errors from handlers:
 
 ```go
 func ErrorHandlingMiddleware() blaze.MiddlewareFunc {
@@ -414,12 +602,19 @@ func ErrorHandlingMiddleware() blaze.MiddlewareFunc {
             err := next(c)
             if err != nil {
                 // Log error
-                log.Printf("Handler error: %v", err)
+                c.LogError("Handler error", "error", err, "path", c.Path())
                 
-                // Return custom error response
+                // Check error type
+                if httpErr, ok := err.(*blaze.HTTPError); ok {
+                    return c.Status(httpErr.Code).JSON(blaze.Map{
+                        "error": httpErr.Message,
+                        "code":  httpErr.Code,
+                    })
+                }
+                
+                // Generic error response
                 return c.Status(500).JSON(blaze.Map{
                     "error": "An internal error occurred",
-                    "timestamp": time.Now().Unix(),
                 })
             }
             return nil
@@ -428,26 +623,104 @@ func ErrorHandlingMiddleware() blaze.MiddlewareFunc {
 }
 ```
 
+## Middleware Application
+
+### Global Middleware
+
+Apply middleware to all routes:
+
+```go
+app := blaze.New()
+
+// Order matters - first added, first executed
+app.Use(blaze.Recovery())
+app.Use(blaze.LoggerMiddleware())
+app.Use(blaze.RequestIDMiddleware())
+app.Use(blaze.CORS(corsConfig))
+app.Use(blaze.Compress())
+```
+
+### Route-Specific Middleware
+
+Apply middleware to specific routes:
+
+```go
+app.GET("/admin", adminHandler, 
+    blaze.WithMiddleware(blaze.Auth(tokenValidator)),
+    blaze.WithMiddleware(AdminOnlyMiddleware()),
+)
+```
+
+### Group Middleware
+
+Apply middleware to route groups:
+
+```go
+api := app.Group("/api/v1")
+api.Use(blaze.LoggerMiddleware())
+api.Use(blaze.Auth(tokenValidator))
+api.Use(blaze.RateLimitMiddleware(rateLimitOpts))
+
+// All routes in this group have the middleware
+api.GET("/users", getUsersHandler)
+api.POST("/users", createUserHandler)
+```
+
+### Middleware Execution Order
+
+Middleware executes in the order it was registered, creating an "onion" pattern:
+
+```go
+app.Use(middleware1)  // Executes first (outer)
+app.Use(middleware2)  // Executes second (middle)
+app.Use(middleware3)  // Executes third (inner)
+
+// Execution flow:
+// middleware1 (before) -> middleware2 (before) -> middleware3 (before) 
+// -> handler 
+// -> middleware3 (after) -> middleware2 (after) -> middleware1 (after)
+```
+
 ## Best Practices
 
 ### Performance Considerations
 
-- Place lightweight middleware (like request ID generation) early in the chain
-- Place expensive middleware (like authentication) later, after basic validation
+- Place lightweight middleware (like request ID) early in the chain
+- Place expensive middleware (like authentication) after basic validation
 - Use caching middleware to reduce database load
-- Enable compression middleware to reduce bandwidth usage
+- Enable compression middleware for bandwidth savings
+- Use body limit middleware to prevent DoS attacks
+
+```go
+// Recommended order for performance
+app.Use(blaze.Recovery())                      // 1. Catch panics first
+app.Use(blaze.LoggerMiddleware())              // 2. Log all requests
+app.Use(blaze.RequestIDMiddleware())           // 3. Add request ID
+app.Use(blaze.BodyLimitMB(10))                 // 4. Validate body size
+app.Use(blaze.CORS(corsConfig))                // 5. Handle CORS
+app.Use(blaze.Compress())                      // 6. Compress responses
+app.Use(blaze.Cache(cacheOpts))                // 7. Cache responses
+app.Use(blaze.RateLimitMiddleware(rateOpts))   // 8. Rate limiting
+app.Use(blaze.Auth(validator))                 // 9. Authentication last
+```
 
 ### Security Best Practices
 
-- Always use CSRF protection for state-changing operations
-- Implement rate limiting to prevent abuse
-- Use authentication middleware for protected endpoints
-- Enable CORS middleware with restrictive policies
-- Add security headers using HTTP2Security middleware
+```go
+// Production security stack
+app.Use(blaze.Recovery())
+app.Use(blaze.HTTP2Security())
+app.Use(blaze.CORS(blaze.CORSOptions{
+    AllowOrigins:     []string{os.Getenv("ALLOWED_ORIGIN")},
+    AllowMethods:     []string{"GET", "POST", "PUT", "DELETE"},
+    AllowCredentials: true,
+}))
+app.Use(blaze.CSRF(blaze.ProductionCSRFOptions([]byte("secret"))))
+app.Use(blaze.RateLimitMiddleware(rateOpts))
+app.Use(blaze.BodyLimitMB(10))
+```
 
 ### Graceful Shutdown Integration
-
-Middleware should respect graceful shutdown contexts.
 
 ```go
 func GracefulMiddleware() blaze.MiddlewareFunc {
@@ -456,17 +729,17 @@ func GracefulMiddleware() blaze.MiddlewareFunc {
             // Check if shutting down
             if c.IsShuttingDown() {
                 return c.Status(503).JSON(blaze.Map{
-                    "error": "Service shutting down"
+                    "error": "Service shutting down",
                 })
             }
             
-            // Use shutdown-aware context for operations
+            // Use shutdown-aware context
             ctx := c.ShutdownContext()
             
             select {
             case <-ctx.Done():
                 return c.Status(503).JSON(blaze.Map{
-                    "error": "Service shutting down"
+                    "error": "Service shutting down",
                 })
             default:
                 return next(c)
@@ -476,4 +749,4 @@ func GracefulMiddleware() blaze.MiddlewareFunc {
 }
 ```
 
-The middleware system in Blaze provides a flexible and powerful way to handle cross-cutting concerns in your web application while maintaining clean separation of responsibilities and supporting advanced features like HTTP/2, graceful shutdown, and comprehensive file upload handling.
+The middleware system in Blaze provides a flexible and powerful way to handle cross-cutting concerns in your web application while maintaining clean separation of responsibilities and supporting advanced features like HTTP/2, graceful shutdown, compression, caching, and comprehensive security.

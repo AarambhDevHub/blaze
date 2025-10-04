@@ -111,75 +111,6 @@ func (c *Context) Response() *fasthttp.Response {
 	return &c.RequestCtx.Response
 }
 
-// SetHeader sets a response header
-func (c *Context) SetHeader(key, value string) *Context {
-	c.RequestCtx.Response.Header.Set(key, value)
-	return c
-}
-
-// Status sets the response status code
-func (c *Context) Status(status int) *Context {
-	c.RequestCtx.SetStatusCode(status)
-	return c
-}
-
-// SetContentType sets response Content-Type (FIXED METHOD)
-func (c *Context) SetContentType(contentType string) {
-	c.RequestCtx.SetContentType(contentType)
-}
-
-// WriteString writes string to response body (FIXED METHOD)
-func (c *Context) WriteString(s string) (int, error) {
-	return c.RequestCtx.WriteString(s)
-}
-
-// JSON sends a JSON response
-func (c *Context) JSON(data interface{}) error {
-	c.SetContentType("application/json; charset=utf-8")
-	return fastjson.NewEncoder(c.RequestCtx).Encode(data)
-}
-
-// JSONStatus sends a JSON response with status code
-func (c *Context) JSONStatus(status int, data interface{}) error {
-	c.Status(status)
-	return c.JSON(data)
-}
-
-// Text sends a plain text response
-func (c *Context) Text(text string) error {
-	c.SetContentType("text/plain; charset=utf-8")
-	_, err := c.WriteString(text)
-	return err
-}
-
-// TextStatus sends a plain text response with status code
-func (c *Context) TextStatus(status int, text string) error {
-	c.Status(status)
-	return c.Text(text)
-}
-
-// HTML sends an HTML response
-func (c *Context) HTML(html string) error {
-	c.SetContentType("text/html; charset=utf-8")
-	_, err := c.WriteString(html)
-	return err
-}
-
-// HTMLStatus sends an HTML response with status code
-func (c *Context) HTMLStatus(status int, html string) error {
-	c.Status(status)
-	return c.HTML(html)
-}
-
-// Redirect redirects to the given URL (FIXED)
-func (c *Context) Redirect(url string, status ...int) {
-	code := fasthttp.StatusFound
-	if len(status) > 0 {
-		code = status[0]
-	}
-	c.RequestCtx.Redirect(url, code)
-}
-
 // Body returns the request body (FIXED METHOD)
 func (c *Context) Body() []byte {
 	return c.RequestCtx.PostBody()
@@ -217,20 +148,6 @@ func (c *Context) BindJSON(v interface{}) error {
 // Cookie returns the cookie value
 func (c *Context) Cookie(name string) string {
 	return string(c.RequestCtx.Request.Header.Cookie(name))
-}
-
-// SetCookie sets a cookie
-func (c *Context) SetCookie(name, value string, expires ...time.Time) *Context {
-	cookie := &fasthttp.Cookie{}
-	cookie.SetKey(name)
-	cookie.SetValue(value)
-
-	if len(expires) > 0 {
-		cookie.SetExpire(expires[0])
-	}
-
-	c.RequestCtx.Response.Header.SetCookie(cookie)
-	return c
 }
 
 // Locals returns a local variable
@@ -828,4 +745,173 @@ func (c *Context) GetFileInfo(filepath string) (os.FileInfo, error) {
 // ResponseWriter returns an io.Writer for the response body
 func (c *Context) ResponseWriter() io.Writer {
 	return c.RequestCtx.Response.BodyWriter()
+}
+
+// State returns application state value from context
+func (c *Context) State(key string) (interface{}, bool) {
+	// Get app from locals
+	if app := c.Locals("__app__"); app != nil {
+		if blazeApp, ok := app.(*App); ok {
+			return blazeApp.GetState(key)
+		}
+	}
+	return nil, false
+}
+
+// MustState returns application state or panics
+func (c *Context) MustState(key string) interface{} {
+	value, exists := c.State(key)
+	if !exists {
+		panic(fmt.Sprintf("state key %s not found", key))
+	}
+	return value
+}
+
+// StateString returns state value as string
+func (c *Context) StateString(key string) string {
+	if value, exists := c.State(key); exists {
+		if str, ok := value.(string); ok {
+			return str
+		}
+	}
+	return ""
+}
+
+// StateInt returns state value as int
+func (c *Context) StateInt(key string) int {
+	if value, exists := c.State(key); exists {
+		if i, ok := value.(int); ok {
+			return i
+		}
+	}
+	return 0
+}
+
+// StateBool returns state value as bool
+func (c *Context) StateBool(key string) bool {
+	if value, exists := c.State(key); exists {
+		if b, ok := value.(bool); ok {
+			return b
+		}
+	}
+	return false
+}
+
+// BindAndValidate binds and validates request body in one call
+func (c *Context) BindAndValidate(v interface{}) error {
+	// Bind the request body
+	if err := c.Bind(v); err != nil {
+		return fmt.Errorf("binding error: %w", err)
+	}
+
+	// Validate the bound struct
+	validator := GetValidator()
+	if err := validator.ValidateStruct(v); err != nil {
+		return err
+	}
+
+	return nil
+}
+
+// BindJSONAndValidate binds JSON and validates in one call
+func (c *Context) BindJSONAndValidate(v interface{}) error {
+	// Bind JSON
+	if err := c.BindJSON(v); err != nil {
+		return fmt.Errorf("binding error: %w", err)
+	}
+
+	// Validate
+	validator := GetValidator()
+	if err := validator.ValidateStruct(v); err != nil {
+		return err
+	}
+
+	return nil
+}
+
+// BindFormAndValidate binds form data and validates
+func (c *Context) BindFormAndValidate(v interface{}) error {
+	// Bind form data
+	if err := c.BindForm(v); err != nil {
+		return fmt.Errorf("binding error: %w", err)
+	}
+
+	// Validate
+	validator := GetValidator()
+	if err := validator.ValidateStruct(v); err != nil {
+		return err
+	}
+
+	return nil
+}
+
+// BindMultipartFormAndValidate binds multipart form and validates
+func (c *Context) BindMultipartFormAndValidate(v interface{}) error {
+	// Bind multipart form
+	if err := c.BindMultipartForm(v); err != nil {
+		return fmt.Errorf("binding error: %w", err)
+	}
+
+	// Validate
+	validator := GetValidator()
+	if err := validator.ValidateStruct(v); err != nil {
+		return err
+	}
+
+	return nil
+}
+
+// Validate validates a struct without binding
+func (c *Context) Validate(v interface{}) error {
+	validator := GetValidator()
+	return validator.ValidateStruct(v)
+}
+
+// ValidateVar validates a single variable
+func (c *Context) ValidateVar(field interface{}, tag string) error {
+	validator := GetValidator()
+	return validator.ValidateVar(field, tag)
+}
+
+// Download sends a file as a download with custom filename
+func (c *Context) Download(filepath, filename string) error {
+	c.SetHeader("Content-Disposition", fmt.Sprintf("attachment; filename=\"%s\"", filename))
+	c.SetHeader("Content-Type", "application/octet-stream")
+	c.RequestCtx.SendFile(filepath)
+	return nil
+}
+
+// Attachment is an alias for Download
+func (c *Context) AttachmentStatic(filepath, filename string) error {
+	return c.Download(filepath, filename)
+}
+
+// Logger returns a request-specific logger with context
+func (c *Context) Logger() *Loggerlog {
+	requestID := c.GetUserValueString("request_id")
+	return GetDefaultLogger().With(
+		"request_id", requestID,
+		"method", c.Method(),
+		"path", c.Path(),
+	)
+}
+
+// LogDebug logs a debug message with request context
+func (c *Context) LogDebug(msg string, args ...interface{}) {
+	c.Logger().Debug(msg, args...)
+}
+
+// LogInfo logs an info message with request context
+func (c *Context) LogInfo(msg string, args ...interface{}) {
+	c.Logger().Info(msg, args...)
+}
+
+// LogWarn logs a warning message with request context
+func (c *Context) LogWarn(msg string, args ...interface{}) {
+	c.Logger().Warn(msg, args...)
+}
+
+// LogError logs an error message with request context
+func (c *Context) LogError(msg string, args ...interface{}) {
+	c.Logger().Error(msg, args...)
 }
