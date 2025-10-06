@@ -89,7 +89,7 @@ module github.com/yourusername/my-blaze-app
 go 1.24.0
 
 require (
-    github.com/AarambhDevHub/blaze v0.1.3
+    github.com/AarambhDevHub/blaze v0.1.4
 )
 ```
 

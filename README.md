@@ -84,7 +84,7 @@ func main() {
         return c.JSON(blaze.Map{
             "message": "Hello, Blaze! 🔥",
             "status":  "success",
-            "version": "v0.1.3",
+            "version": "v0.1.4",
         })
     })
 
