@@ -15,59 +15,66 @@ import (
 	"github.com/valyala/fasthttp"
 )
 
-// CacheEntry represents a cached response
+// CacheEntry represents a cached HTTP response with all necessary metadata
+// for serving, validation, and eviction decisions.
 type CacheEntry struct {
 	// Response data
-	StatusCode int
-	Headers    map[string]string
-	Body       []byte
 
-	// Cache metadata
-	CreatedAt   time.Time
-	ExpiresAt   time.Time
-	AccessedAt  int64 // atomic counter
-	AccessCount int64 // atomic counter
+	StatusCode int               // HTTP status code of the cached response
+	Headers    map[string]string // HTTP headers from the original response
+	Body       []byte            // Response body content
 
-	// Cache validation
-	ETag         string
-	LastModified time.Time
+	// Cache metadata for lifecycle management
 
-	// Size for memory management
-	Size int64
+	CreatedAt   time.Time // When this entry was first cached
+	ExpiresAt   time.Time // When this entry becomes invalid
+	AccessedAt  int64     // Last access timestamp (atomic counter for concurrency)
+	AccessCount int64     // Number of times accessed (atomic counter)
+
+	// Cache validation for conditional requests (304 Not Modified)
+
+	ETag         string    // Entity tag for cache validation
+	LastModified time.Time // Last modification time for conditional requests
+
+	// Size for memory management and eviction
+
+	Size int64 // Total size in bytes for memory tracking
 }
 
-// CacheStore defines the interface for cache storage
+// CacheStore defines the interface for cache storage implementations.
+// This allows plugging different storage backends (memory, Redis, etc.).
 type CacheStore interface {
-	Get(key string) (*CacheEntry, bool)
-	Set(key string, entry *CacheEntry, ttl time.Duration) bool
-	Delete(key string) bool
-	Clear() int
-	Size() int64
-	Keys() []string
-	Stats() CacheStats
-	Cleanup() int
+	Get(key string) (*CacheEntry, bool)                        // Retrieve cached entry
+	Set(key string, entry *CacheEntry, ttl time.Duration) bool // Store entry with TTL
+	Delete(key string) bool                                    // Remove specific entry
+	Clear() int                                                // Remove all entries, return count
+	Size() int64                                               // Total size in bytes
+	Keys() []string                                            // All cache keys
+	Stats() CacheStats                                         // Cache statistics
+	Cleanup() int                                              // Remove expired entries, return count
 }
 
-// MemoryStore implements CacheStore for in-memory caching
+// MemoryStore implements CacheStore for in-memory caching with configurable
+// eviction algorithms and size limits.
 type MemoryStore struct {
-	entries    map[string]*CacheEntry
-	mu         sync.RWMutex
-	maxSize    int64
-	maxEntries int
-	algorithm  EvictionAlgorithm
-	stats      CacheStats
+	entries    map[string]*CacheEntry // Actual cache storage
+	mu         sync.RWMutex           // Protects concurrent access
+	maxSize    int64                  // Maximum total cache size in bytes
+	maxEntries int                    // Maximum number of entries
+	algorithm  EvictionAlgorithm      // Eviction strategy (LRU, LFU, etc.)
+	stats      CacheStats             // Runtime statistics
 }
 
 // CacheStats holds cache statistics
 type CacheStats struct {
-	Hits      int64   `json:"hits"`
-	Misses    int64   `json:"misses"`
-	Sets      int64   `json:"sets"`
-	Deletes   int64   `json:"deletes"`
-	Evictions int64   `json:"evictions"`
-	Size      int64   `json:"size"`
-	Entries   int64   `json:"entries"`
-	HitRatio  float64 `json:"hit_ratio"`
+	Hits      int64   `json:"hits"`      // Number of cache hits
+	Misses    int64   `json:"misses"`    // Number of cache misses
+	Sets      int64   `json:"sets"`      // Number of cache sets
+	Deletes   int64   `json:"deletes"`   // Number of cache deletions
+	Evictions int64   `json:"evictions"` // Number of evictions
+	Size      int64   `json:"size"`      // Current cache size in bytes
+	Entries   int64   `json:"entries"`   // Current number of entries
+	HitRatio  float64 `json:"hit_ratio"` // Cache hit ratio (0-1)
 }
 
 // EvictionAlgorithm defines cache eviction strategies
@@ -83,49 +90,50 @@ const (
 // CacheOptions configures the cache middleware
 type CacheOptions struct {
 	// Storage configuration
-	Store      CacheStore
-	DefaultTTL time.Duration
-	MaxAge     time.Duration
+	Store      CacheStore    // Cache storage backend
+	DefaultTTL time.Duration // Default time-to-live for cache entries
+	MaxAge     time.Duration // Maximum age for cache entries
 
 	// Memory limits
 	MaxSize    int64 // Maximum total cache size in bytes
 	MaxEntries int   // Maximum number of cache entries
 
 	// Eviction strategy
-	Algorithm EvictionAlgorithm
+	Algorithm EvictionAlgorithm // Cache eviction algorithm
 
 	// Cache control
-	Skipper      func(c *Context) bool
-	KeyGenerator func(c *Context) string
-	ShouldCache  func(c *Context) bool
-	VaryHeaders  []string
+	Skipper      func(c *Context) bool   // Skip caching for specific requests
+	KeyGenerator func(c *Context) string // Custom cache key generation
+	ShouldCache  func(c *Context) bool   // Determine if response should be cached
+	VaryHeaders  []string                // Headers to include in cache key
 
 	// HTTP cache headers
-	Public          bool
-	Private         bool
-	NoCache         bool
-	NoStore         bool
-	MustRevalidate  bool
-	ProxyRevalidate bool
-	Immutable       bool
+	Public          bool // Cache-Control: public
+	Private         bool // Cache-Control: private
+	NoCache         bool // Cache-Control: no-cache
+	NoStore         bool // Cache-Control: no-store
+	MustRevalidate  bool // Cache-Control: must-revalidate
+	ProxyRevalidate bool // Cache-Control: proxy-revalidate
+	Immutable       bool // Cache-Control: immutable
 
 	// Compression
-	EnableCompression bool
-	CompressionLevel  int
+	EnableCompression bool // Enable response compression
+	CompressionLevel  int  // Compression level (1-9)
 
 	// Background tasks
-	CleanupInterval         time.Duration
-	EnableBackgroundCleanup bool
+	CleanupInterval         time.Duration // Interval for cleanup routine
+	EnableBackgroundCleanup bool          // Enable automatic cleanup
 
 	// Cache warming
-	WarmupURLs []string
+	WarmupURLs []string // URLs to pre-cache on startup
 
 	// Debugging
-	EnableHeaders bool
-	HeaderPrefix  string
+	EnableHeaders bool   // Add debug headers (X-Cache-*)
+	HeaderPrefix  string // Prefix for debug headers
 }
 
 // DefaultCacheOptions returns sensible defaults for cache configuration
+// Suitable for development and testing environments
 func DefaultCacheOptions() *CacheOptions {
 	return &CacheOptions{
 		Store:                   NewMemoryStore(100*1024*1024, 10000, LRU), // 100MB, 10k entries
@@ -146,6 +154,7 @@ func DefaultCacheOptions() *CacheOptions {
 }
 
 // ProductionCacheOptions returns production-ready cache configuration
+// Optimized for high-traffic production environments
 func ProductionCacheOptions() *CacheOptions {
 	opts := DefaultCacheOptions()
 	opts.MaxSize = 512 * 1024 * 1024 // 512MB
@@ -161,6 +170,10 @@ func ProductionCacheOptions() *CacheOptions {
 }
 
 // NewMemoryStore creates a new in-memory cache store
+// Parameters:
+//   - maxSize: Maximum cache size in bytes
+//   - maxEntries: Maximum number of cache entries
+//   - algorithm: Eviction algorithm (LRU, LFU, FIFO, Random)
 func NewMemoryStore(maxSize int64, maxEntries int, algorithm EvictionAlgorithm) *MemoryStore {
 	store := &MemoryStore{
 		entries:    make(map[string]*CacheEntry),
@@ -171,7 +184,11 @@ func NewMemoryStore(maxSize int64, maxEntries int, algorithm EvictionAlgorithm) 
 	return store
 }
 
-// Cache creates a new cache middleware
+// Cache creates a new cache middleware with the given options
+// Caches GET and HEAD requests by default
+// Example:
+//
+//	app.Use(blaze.Cache(blaze.DefaultCacheOptions()))
 func Cache(opts *CacheOptions) MiddlewareFunc {
 	if opts == nil {
 		opts = DefaultCacheOptions()
@@ -222,7 +239,10 @@ func Cache(opts *CacheOptions) MiddlewareFunc {
 	}
 }
 
-// CacheResponse caches responses for specific routes
+// CacheResponse caches responses for specific routes with custom TTL
+// Example:
+//
+//	app.GET("/api/users", handler, blaze.CacheResponse(5*time.Minute))
 func CacheResponse(ttl time.Duration, opts ...*CacheOptions) MiddlewareFunc {
 	var cacheOpts *CacheOptions
 	if len(opts) > 0 {
@@ -235,6 +255,10 @@ func CacheResponse(ttl time.Duration, opts ...*CacheOptions) MiddlewareFunc {
 }
 
 // CacheStatic caches static files with longer TTL
+// Automatically detects common static file extensions
+// Example:
+//
+//	app.Use(blaze.CacheStatic())
 func CacheStatic(opts ...*CacheOptions) MiddlewareFunc {
 	var cacheOpts *CacheOptions
 	if len(opts) > 0 {
@@ -263,7 +287,11 @@ func CacheStatic(opts ...*CacheOptions) MiddlewareFunc {
 	return Cache(cacheOpts)
 }
 
-// CacheAPI caches API responses with shorter TTL
+// CacheAPI caches API responses with shorter TTL and proper headers
+// Example:
+//
+//	api := app.Group("/api")
+//	api.Use(blaze.CacheAPI(1*time.Minute))
 func CacheAPI(ttl time.Duration) MiddlewareFunc {
 	opts := DefaultCacheOptions()
 	opts.DefaultTTL = ttl
@@ -301,6 +329,7 @@ func validateCacheOptions(opts *CacheOptions) error {
 }
 
 // generateCacheKey creates a unique cache key for the request
+// Includes method, path, query string, and vary headers
 func generateCacheKey(c *Context, opts *CacheOptions) string {
 	if opts.KeyGenerator != nil {
 		return opts.KeyGenerator(c)
@@ -866,6 +895,7 @@ func CacheStatus(c *Context) error {
 }
 
 // InvalidateCache provides cache invalidation functionality
+// Removes all cache entries matching the given pattern
 func InvalidateCache(store CacheStore, pattern string) int {
 	keys := store.Keys()
 	var removed int

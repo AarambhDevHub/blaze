@@ -748,6 +748,45 @@ func (a *App) ListenAndServeGraceful(signals ...os.Signal) error {
 }
 
 // UseErrorHandler sets up centralized error handling middleware
+// Convenience method that configures both recovery and error handling
+//
+// Setup Order:
+//  1. Recovery middleware (catches panics)
+//  2. Error handler middleware (processes errors)
+//
+// This ensures panics are recovered and converted to errors,
+// then error handler processes all errors consistently
+//
+// Parameters:
+//   - config: Error handler configuration (nil for defaults)
+//
+// Returns:
+//   - *App: App instance for method chaining
+//
+// Example - Basic Usage:
+//
+//	app := blaze.New()
+//	app.UseErrorHandler(nil) // Uses defaults
+//
+// Example - Development Mode:
+//
+//	app.UseErrorHandler(blaze.DevelopmentErrorHandlerConfig())
+//
+// Example - Production Mode:
+//
+//	app.UseErrorHandler(blaze.DefaultErrorHandlerConfig())
+//
+// Example - Custom Configuration:
+//
+//	config := &blaze.ErrorHandlerConfig{
+//	    IncludeStackTrace: false,
+//	    LogErrors: true,
+//	    HideInternalErrors: true,
+//	    Logger: func(err error) {
+//	        logger.Error("request_error", zap.Error(err))
+//	    },
+//	}
+//	app.UseErrorHandler(config)
 func (a *App) UseErrorHandler(config *ErrorHandlerConfig) *App {
 	if config == nil {
 		if a.config.Development {

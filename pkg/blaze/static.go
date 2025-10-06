@@ -11,43 +11,126 @@ import (
 	"time"
 )
 
-// StaticConfig holds configuration for serving static files
+// StaticConfig holds comprehensive configuration for serving static files
+// Controls caching, compression, security, and directory listing behavior
+//
+// Static File Serving Philosophy:
+//   - Security: Prevent directory traversal and unauthorized access
+//   - Performance: Enable caching and compression
+//   - Usability: Support range requests and directory browsing
+//   - Flexibility: Allow custom handlers and modifications
+//
+// Production Best Practices:
+//   - Disable directory browsing (Browse: false)
+//   - Enable compression (Compress: true)
+//   - Set appropriate cache duration (CacheDuration: 1 hour+)
+//   - Exclude sensitive files (.git, .env, etc.)
+//   - Use CDN for production static assets
+//
+// Security Considerations:
+//   - Always sanitize file paths to prevent traversal
+//   - Exclude sensitive files and directories
+//   - Disable directory listing in production
+//   - Set proper MIME types to prevent XSS
+//   - Implement access controls for private files
 type StaticConfig struct {
-	// Root directory to serve files from
+	// Root is the directory to serve files from
+	// Must be an absolute or relative path to existing directory
+	// Required field - no default
+	// Example: "./public", "/var/www/html"
 	Root string
 
-	// Index file to serve for directories (default: "index.html")
+	// Index is the default file to serve for directories
+	// Served when request path is a directory
+	// Common values: "index.html", "default.html"
+	// Default: "index.html"
 	Index string
 
-	// Enable directory browsing (default: false for security)
+	// Browse enables directory listing when no index file exists
+	// When true: Shows list of files in directory
+	// When false: Returns 403 Forbidden
+	// Security: Should be false in production
+	// Default: false
 	Browse bool
 
-	// Enable compression (gzip) for responses (default: true)
+	// Compress enables gzip compression for responses
+	// Automatically compresses compatible content types
+	// Reduces bandwidth usage and improves load times
+	// Should be enabled for production
+	// Default: true
 	Compress bool
 
-	// Enable byte range requests for large files (default: true)
+	// ByteRange enables HTTP range request support
+	// Required for video streaming and large file downloads
+	// Allows resuming downloads and seeking in media
+	// Should be enabled for production
+	// Default: true
 	ByteRange bool
 
-	// Cache control max-age in seconds (default: 3600 = 1 hour)
+	// CacheDuration specifies cache control max-age
+	// Determines how long browsers cache static files
+	// Common values: 1 hour, 1 day, 1 week, 1 year
+	// Use longer durations for versioned assets
+	// Default: 1 hour
 	CacheDuration time.Duration
 
-	// Custom 404 handler when file not found
+	// NotFoundHandler is called when file doesn't exist
+	// Allows custom 404 pages or logging
+	// If nil, returns standard 404 error
+	// Example: Custom 404 page handler
 	NotFoundHandler HandlerFunc
 
-	// Modify response function called before sending file
+	// Modify is called before sending each file
+	// Allows adding custom headers or logic
+	// Receives context for inspection/modification
+	// Return error to abort file serving
+	// Example: Add custom security headers
 	Modify func(*Context) error
 
-	// Generate ETag for caching (default: true)
+	// GenerateETag enables ETag generation for caching
+	// ETags allow efficient cache validation
+	// Generated from file modification time and size
+	// Reduces unnecessary data transfer
+	// Default: true
 	GenerateETag bool
 
-	// File patterns to exclude (e.g., []string{".git", ".env"})
+	// Exclude specifies file patterns to exclude
+	// Prevents serving sensitive files
+	// Supports substring matching
+	// Common exclusions: ".git", ".env", "*.key"
+	// Default: [".git", ".svn", ".DS_Store"]
 	Exclude []string
 
-	// Custom MIME type mappings
+	// MIMETypes provides custom MIME type mappings
+	// Maps file extensions to content types
+	// Overrides default MIME type detection
+	// Example: {".json": "application/json"}
+	// Default: empty (uses standard MIME types)
 	MIMETypes map[string]string
 }
 
 // DefaultStaticConfig returns default static file configuration
+// Provides secure, production-ready defaults
+//
+// Default Settings:
+//   - Root: Must be provided (required)
+//   - Index: "index.html"
+//   - Browse: false (security)
+//   - Compress: true (performance)
+//   - ByteRange: true (streaming support)
+//   - CacheDuration: 1 hour
+//   - GenerateETag: true (caching)
+//   - Exclude: [".git", ".svn", ".DS_Store"]
+//
+// Parameters:
+//   - root: Root directory path
+//
+// Returns:
+//   - StaticConfig: Default configuration
+//
+// Example:
+//
+//	config := blaze.DefaultStaticConfig("./public")
 func DefaultStaticConfig(root string) StaticConfig {
 	return StaticConfig{
 		Root:          root,
@@ -63,6 +146,65 @@ func DefaultStaticConfig(root string) StaticConfig {
 }
 
 // StaticFS creates a handler for serving static files with custom configuration
+// Provides full control over static file serving behavior
+//
+// Setup Process:
+//  1. Validate and normalize root directory
+//  2. Check directory exists and is accessible
+//  3. Set configuration defaults
+//  4. Return handler function
+//
+// Handler Behavior:
+//   - Extracts file path from URL
+//   - Validates path (prevents traversal)
+//   - Checks exclusion rules
+//   - Serves files or directories
+//   - Applies caching and compression
+//
+// Parameters:
+//   - config: Static file configuration
+//
+// Returns:
+//   - HandlerFunc: Static file serving handler
+//
+// Example - Basic Setup:
+//
+//	handler := blaze.StaticFS(blaze.StaticConfig{
+//	    Root: "./public",
+//	})
+//	app.GET("/static/*", handler)
+//
+// Example - Production Setup:
+//
+//	config := blaze.StaticConfig{
+//	    Root: "./public",
+//	    Index: "index.html",
+//	    Browse: false,
+//	    Compress: true,
+//	    ByteRange: true,
+//	    CacheDuration: 24 * time.Hour,
+//	    GenerateETag: true,
+//	    Exclude: []string{".git", ".env", ".key"},
+//	}
+//	handler := blaze.StaticFS(config)
+//	app.GET("/assets/*", handler)
+//
+// Example - Development Setup with Browsing:
+//
+//	config := blaze.StaticConfig{
+//	    Root: "./public",
+//	    Browse: true,
+//	    CacheDuration: 0, // No caching in dev
+//	}
+//	handler := blaze.StaticFS(config)
+//
+// Example - With Custom 404:
+//
+//	config := blaze.DefaultStaticConfig("./public")
+//	config.NotFoundHandler = func(c *blaze.Context) error {
+//	    return c.Status(404).HTML("<h1>File Not Found</h1>")
+//	}
+//	handler := blaze.StaticFS(config)
 func StaticFS(config StaticConfig) HandlerFunc {
 	// Validate and normalize root directory
 	if config.Root == "" {
@@ -132,11 +274,43 @@ func StaticFS(config StaticConfig) HandlerFunc {
 }
 
 // Static creates a handler for serving static files with default configuration
+// Convenience method for simple static file serving
+//
+// Parameters:
+//   - root: Root directory path
+//
+// Returns:
+//   - HandlerFunc: Static file handler with defaults
+//
+// Example:
+//
+//	handler := blaze.Static("./public")
+//	app.GET("/static/*", handler)
 func Static(root string) HandlerFunc {
 	return StaticFS(DefaultStaticConfig(root))
 }
 
 // serveFile serves a single file with proper headers
+// Handles caching, compression, range requests, and conditional requests
+//
+// Serving Process:
+//  1. Apply custom modifier if configured
+//  2. Set content type based on file extension
+//  3. Set cache headers (Cache-Control, Expires)
+//  4. Set Last-Modified header
+//  5. Generate and set ETag if enabled
+//  6. Check conditional requests (If-None-Match, If-Modified-Since)
+//  7. Handle range requests if enabled
+//  8. Send file content
+//
+// Parameters:
+//   - c: Request context
+//   - fsPath: File system path
+//   - fileInfo: File information
+//   - config: Static configuration
+//
+// Returns:
+//   - error: Serving error or nil
 func serveFile(c *Context, fsPath string, fileInfo os.FileInfo, config StaticConfig) error {
 	// Apply custom modifier if provided
 	if config.Modify != nil {
@@ -191,6 +365,21 @@ func serveFile(c *Context, fsPath string, fileInfo os.FileInfo, config StaticCon
 }
 
 // handleDirectory handles directory requests
+// Serves index file if exists, or generates directory listing if enabled
+//
+// Directory Handling:
+//  1. Try to serve index file (index.html by default)
+//  2. If index doesn't exist and Browse is false: return 403
+//  3. If Browse is true: generate HTML directory listing
+//
+// Parameters:
+//   - c: Request context
+//   - fsPath: Directory file system path
+//   - urlPath: Directory URL path
+//   - config: Static configuration
+//
+// Returns:
+//   - error: Handling error or nil
 func handleDirectory(c *Context, fsPath string, urlPath string, config StaticConfig) error {
 	// Try to serve index file
 	indexPath := filepath.Join(fsPath, config.Index)
@@ -210,6 +399,21 @@ func handleDirectory(c *Context, fsPath string, urlPath string, config StaticCon
 }
 
 // generateDirectoryListing creates an HTML directory listing
+// Displays contents of directory with links to files and subdirectories
+//
+// Listing Features:
+//   - Sorted listing (directories first, then files)
+//   - Parent directory link (if not root)
+//   - File sizes and modification times
+//   - Clean, responsive HTML layout
+//
+// Parameters:
+//   - c: Request context
+//   - fsPath: Directory path
+//   - urlPath: URL path
+//
+// Returns:
+//   - error: Generation error or nil
 func generateDirectoryListing(c *Context, fsPath string, urlPath string) error {
 	dir, err := os.Open(fsPath)
 	if err != nil {
@@ -293,7 +497,26 @@ func generateDirectoryListing(c *Context, fsPath string, urlPath string) error {
 	return c.HTML(html)
 }
 
-// serveFileRange handles HTTP range requests
+// serveFileRange handles HTTP range requests for partial content
+// Enables video streaming, resumable downloads, and seeking
+//
+// Range Request Format:
+//   - Header: "Range: bytes=start-end"
+//   - Examples: "bytes=0-999", "bytes=1000-", "bytes=-500"
+//
+// Response:
+//   - Status: 206 Partial Content
+//   - Headers: Content-Range, Content-Length
+//   - Body: Requested byte range
+//
+// Parameters:
+//   - c: Request context
+//   - fsPath: File path
+//   - fileInfo: File information
+//   - rangeHeader: Range header value
+//
+// Returns:
+//   - error: Range serving error or nil
 func serveFileRange(c *Context, fsPath string, fileInfo os.FileInfo, rangeHeader string) error {
 	file, err := os.Open(fsPath)
 	if err != nil {
@@ -355,6 +578,7 @@ func serveFileRange(c *Context, fsPath string, fileInfo os.FileInfo, rangeHeader
 
 // Helper functions
 
+// isExcluded checks if path matches exclusion patterns
 func isExcluded(path string, excludePatterns []string) bool {
 	base := filepath.Base(path)
 	for _, pattern := range excludePatterns {
@@ -365,6 +589,7 @@ func isExcluded(path string, excludePatterns []string) bool {
 	return false
 }
 
+// getContentType determines MIME type from file extension
 func getContentType(filePath string, customTypes map[string]string) string {
 	ext := strings.ToLower(filepath.Ext(filePath))
 
@@ -385,15 +610,18 @@ func getContentType(filePath string, customTypes map[string]string) string {
 	return "application/octet-stream"
 }
 
+// generateETag generates ETag from file info
 func generateETagS(fileInfo os.FileInfo) string {
 	return fmt.Sprintf(`"%x-%x"`, fileInfo.ModTime().Unix(), fileInfo.Size())
 }
 
+// checkETag checks if client ETag matches
 func checkETag(c *Context, etag string) bool {
 	clientETag := c.Header("If-None-Match")
 	return clientETag == etag
 }
 
+// checkModifiedSince checks if file modified since client cache
 func checkModifiedSince(c *Context, modTime time.Time) bool {
 	ifModifiedSince := c.Header("If-Modified-Since")
 	if ifModifiedSince == "" {
@@ -409,6 +637,7 @@ func checkModifiedSince(c *Context, modTime time.Time) bool {
 	return !modTime.Truncate(time.Second).After(clientTime)
 }
 
+// formatFileSize formats file size in human-readable format
 func formatFileSize(size int64) string {
 	const unit = 1024
 	if size < unit {

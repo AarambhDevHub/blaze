@@ -6,26 +6,118 @@ import (
 	"strings"
 )
 
-// Router implements a radix tree-based router with advance features
+// Router implements a radix tree-based router with advanced features
+// Provides high-performance HTTP routing with parameter extraction and constraints
+//
+// Router Architecture:
+//   - Radix tree for efficient route matching (O(log n) lookup)
+//   - Parameter extraction with named captures
+//   - Wildcard/catch-all routes
+//   - Route constraints (regex, type validation)
+//   - Route grouping and middleware
+//   - Method-specific routing
+//
+// Routing Features:
+//   - Static routes: /users/profile
+//   - Named parameters: /users/:id
+//   - Wildcard routes: /files/*path
+//   - Route constraints: /users/:id<int>
+//   - Priority-based matching
+//
+// Performance:
+//   - Constant-time method lookup
+//   - Logarithmic-time path matching
+//   - Zero allocations for static routes
+//   - Minimal allocations for dynamic routes
 type Router struct {
-	root   *routeNode
+	// root is the root node of the radix tree
+	// Each HTTP method has its own tree for isolation
+	root *routeNode
+
+	// routes stores all registered routes by key (method:pattern)
+	// Used for route introspection and management
 	routes map[string]*Route
+
+	// config holds router configuration
+	// Controls behavior like case sensitivity, trailing slashes
 	config RouterConfig
 }
 
-// RouterConfig holds router configuration
+// RouterConfig holds comprehensive router configuration
+// Controls routing behavior, matching rules, and features
+//
+// Configuration Trade-offs:
+//   - CaseSensitive: Security vs convenience
+//   - StrictSlash: Precision vs flexibility
+//   - RedirectSlash: User-friendly vs explicit
+//   - HandleMethodNotAllowed: Compliance vs performance
+//
+// Production Settings:
+//   - CaseSensitive: false (user-friendly URLs)
+//   - StrictSlash: false (flexible matching)
+//   - RedirectSlash: true (SEO-friendly)
+//   - HandleMethodNotAllowed: true (proper HTTP)
 type RouterConfig struct {
-	CaseSensitive          bool
-	StrictSlash            bool
-	RedirectSlash          bool
-	UseEscapedPath         bool
+	// CaseSensitive when true, routes are case-sensitive
+	// true: /Users and /users are different routes
+	// false: /Users and /users match the same route
+	// Default: false (more user-friendly)
+	CaseSensitive bool
+
+	// StrictSlash when true, trailing slashes must match exactly
+	// true: /users/ and /users are different routes
+	// false: /users/ and /users match the same route
+	// Default: false (more flexible)
+	StrictSlash bool
+
+	// RedirectSlash when true, redirects to add/remove trailing slash
+	// Helps with SEO by providing canonical URLs
+	// Only applies when StrictSlash is false
+	// Default: true (SEO-friendly)
+	RedirectSlash bool
+
+	// UseEscapedPath when true, matches against escaped path
+	// true: Matches %2F as literal %2F
+	// false: Matches %2F as /
+	// Default: false (standard URL decoding)
+	UseEscapedPath bool
+
+	// HandleMethodNotAllowed when true, returns 405 for wrong methods
+	// true: Returns 405 Method Not Allowed with Allow header
+	// false: Returns 404 Not Found
+	// Default: true (proper HTTP semantics)
 	HandleMethodNotAllowed bool
-	HandleOPTIONS          bool
-	EnableMerging          bool // New: Enable route merging
-	MaxMergeDepth          int  // New: Maximum depth for route merging
+
+	// HandleOPTIONS when true, automatically handles OPTIONS requests
+	// Returns allowed methods for the route
+	// Useful for CORS preflight
+	// Default: true (CORS support)
+	HandleOPTIONS bool
+
+	// EnableMerging allows merging routes with same pattern
+	// Combines multiple method handlers into single route
+	// Reduces tree size and improves performance
+	// Default: true (performance optimization)
+	EnableMerging bool
+
+	// MaxMergeDepth limits recursion depth for route merging
+	// Prevents infinite loops in pathological cases
+	// Default: 10 (sufficient for most applications)
+	MaxMergeDepth int
 }
 
 // DefaultRouterConfig returns default router configuration
+// Provides balanced settings for most applications
+//
+// Default Settings:
+//   - Case-insensitive URLs (user-friendly)
+//   - Flexible trailing slashes (convenient)
+//   - Automatic slash redirection (SEO)
+//   - Proper HTTP method handling (standards-compliant)
+//   - Route merging enabled (performance)
+//
+// Returns:
+//   - RouterConfig: Default configuration
 func DefaultRouterConfig() RouterConfig {
 	return RouterConfig{
 		CaseSensitive:          false,
@@ -40,57 +132,187 @@ func DefaultRouterConfig() RouterConfig {
 }
 
 // routeNode represents a node in the radix tree
+// Forms the internal structure of the routing tree
+//
+// Node Types:
+//   - static: Fixed path segment (/users)
+//   - root: Tree root node
+//   - param: Named parameter (/:id)
+//   - catchAll: Wildcard (/*path)
+//
+// Tree Structure:
+//   - Each node stores a path segment
+//   - Children nodes for different paths
+//   - Handlers for matched routes
+//   - Indices for quick child lookup
 type routeNode struct {
-	path       string
-	indices    string
-	children   []*routeNode
-	handlers   map[string]*Route
-	priority   uint32
-	maxParams  uint8
-	wildChild  bool
-	nodeType   nodeType
+	// path is the path segment this node represents
+	// For param nodes: ":paramName"
+	// For catchAll nodes: "*paramName"
+	// For static nodes: actual path segment
+	path string
+
+	// indices stores first characters of children paths
+	// Used for O(1) child lookup by first character
+	// Example: "apu" for children "admin", "posts", "users"
+	indices string
+
+	// children stores child nodes
+	// Ordered to match indices string
+	children []*routeNode
+
+	// handlers maps HTTP methods to routes
+	// Key: HTTP method (GET, POST, etc.)
+	// Value: Route with handler and metadata
+	handlers map[string]*Route
+
+	// priority determines child search order
+	// Higher priority = searched first
+	// Based on route frequency and wildcard type
+	priority uint32
+
+	// maxParams tracks maximum parameters in subtree
+	// Used for pre-allocating parameter maps
+	maxParams uint8
+
+	// wildChild indicates if node has wildcard child
+	// Optimizes wildcard matching
+	wildChild bool
+
+	// nodeType identifies the type of node
+	// Determines matching behavior
+	nodeType nodeType
+
+	// constraint for parameter validation
+	// nil for non-parameter nodes
 	constraint *RouteConstraint
 }
 
 // nodeType defines the type of route node
+// Different node types have different matching semantics
 type nodeType uint8
 
 const (
+	// static is a normal node with fixed path segment
+	// Exact match required
 	static nodeType = iota
+
+	// root is the root of the tree
+	// Special handling for empty path
 	root
+
+	// param is a named parameter node (:id)
+	// Matches single path segment
+	// Stores value in params map
 	param
+
+	// catchAll is a wildcard node (*path)
+	// Matches remaining path segments
+	// Always at end of path
 	catchAll
 )
 
 // RouteConstraint defines constraints for route parameters
+// Validates parameter values before routing
+//
+// Constraint Types:
+//   - int: Integer values only
+//   - uuid: Valid UUID format
+//   - alpha: Alphabetic characters only
+//   - regex: Custom regex pattern
+//
+// Validation Flow:
+//  1. Extract parameter from path
+//  2. Apply constraint pattern matching
+//  3. Reject request if validation fails
+//  4. Pass validated value to handler
 type RouteConstraint struct {
-	Name    string
+	// Name is the parameter name
+	// Must match parameter in route pattern
+	Name string
+
+	// Pattern is the regex for validation
+	// Compiled once at route registration
 	Pattern *regexp.Regexp
-	Type    ConstraintType
+
+	// Type identifies the constraint category
+	// Used for error messages and debugging
+	Type ConstraintType
 }
 
 // ConstraintType defines the type of constraint
+// Categorizes constraints for better error messages
 type ConstraintType string
 
 const (
-	IntConstraint   ConstraintType = "int"
-	UUIDConstraint  ConstraintType = "uuid"
+	// IntConstraint validates integer parameters
+	// Pattern: ^[0-9]+$
+	// Example: /users/:id<int>
+	IntConstraint ConstraintType = "int"
+
+	// UUIDConstraint validates UUID parameters
+	// Pattern: RFC 4122 UUID format
+	// Example: /resources/:id<uuid>
+	UUIDConstraint ConstraintType = "uuid"
+
+	// AlphaConstraint validates alphabetic parameters
+	// Pattern: ^[a-zA-Z]+$
+	// Example: /categories/:slug<alpha>
 	AlphaConstraint ConstraintType = "alpha"
+
+	// RegexConstraint validates custom regex patterns
+	// Pattern: User-defined
+	// Example: /files/:name<regex:[a-z0-9-]+>
 	RegexConstraint ConstraintType = "regex"
 )
 
 // Route represents an enhanced route with constraints and middleware
+// Stores complete route information including handlers and metadata
+//
+// Route Lifecycle:
+//  1. Created during route registration
+//  2. Stored in routes map
+//  3. Inserted into radix tree
+//  4. Matched during requests
+//  5. Handler executed with middleware
 type Route struct {
-	Method      string
-	Pattern     string
-	Handler     HandlerFunc
-	Middleware  []MiddlewareFunc
+	// Method is the HTTP method (GET, POST, etc.)
+	Method string
+
+	// Pattern is the original route pattern
+	// Example: "/users/:id/posts/*path"
+	Pattern string
+
+	// Handler is the request handler function
+	Handler HandlerFunc
+
+	// Middleware is route-specific middleware
+	// Applied in addition to global middleware
+	Middleware []MiddlewareFunc
+
+	// Constraints maps parameter names to validation rules
+	// Applied before handler execution
 	Constraints map[string]*RouteConstraint
-	Name        string
-	Params      []string
-	Merged      []*Route // New: For merged routes
-	Priority    int      // New: Route priority
-	Tags        []string // New: Route tags for grouping
+
+	// Name is an optional route identifier
+	// Used for route lookups and URL generation
+	Name string
+
+	// Params lists parameter names in order
+	// Extracted from route pattern during registration
+	Params []string
+
+	// Merged contains routes merged into this route
+	// Non-nil when EnableMerging is true and routes merged
+	Merged []*Route
+
+	// Priority determines route matching order
+	// Higher priority routes checked first
+	Priority int
+
+	// Tags categorizes routes for grouping
+	// Used for filtering and documentation
+	Tags []string
 }
 
 type RouteGroup struct {
@@ -100,7 +322,19 @@ type RouteGroup struct {
 	Middleware  []MiddlewareFunc
 }
 
-// NewRouter creates a new  router
+// NewRouter creates a new router instance
+// Initializes radix tree and configuration
+//
+// Parameters:
+//   - config: Optional router configuration
+//
+// Returns:
+//   - *Router: Configured router instance
+//
+// Example:
+//
+//	router := blaze.NewRouter()
+//	router := blaze.NewRouter(customConfig)
 func NewRouter(config ...RouterConfig) *Router {
 	var cfg RouterConfig
 	if len(config) > 0 {
@@ -309,13 +543,36 @@ type RouteInfo struct {
 	IsMerged        bool     `json:"is_merged"`
 }
 
-// Enhanced RouteOption functions
+// WithPriority sets the route priority
+// Higher priority routes are matched first
+//
+// Parameters:
+//   - priority: Priority value (higher = first)
+//
+// Returns:
+//   - RouteOption: Configuration function
+//
+// Example:
+//
+//	app.GET("/special", handler, blaze.WithPriority(100))
 func WithPriority(priority int) RouteOption {
 	return func(r *Route) {
 		r.Priority = priority
 	}
 }
 
+// WithTags adds tags to the route
+// Tags categorize routes for filtering and documentation
+//
+// Parameters:
+//   - tags: One or more tag strings
+//
+// Returns:
+//   - RouteOption: Configuration function
+//
+// Example:
+//
+//	app.GET("/api/users", handler, blaze.WithTags("api", "public"))
 func WithTags(tags ...string) RouteOption {
 	return func(r *Route) {
 		r.Tags = append(r.Tags, tags...)
@@ -329,6 +586,30 @@ func WithMerge(enable bool) RouteOption {
 }
 
 // AddRoute adds a route with constraints and middleware
+// Registers route in tree and stores metadata
+//
+// Route Registration Process:
+//  1. Create route object with handler
+//  2. Apply route options (middleware, constraints, etc.)
+//  3. Parse pattern to extract parameters
+//  4. Insert into radix tree
+//  5. Store in routes map for introspection
+//
+// Parameters:
+//   - method: HTTP method (GET, POST, etc.)
+//   - pattern: Route pattern with parameters
+//   - handler: Request handler function
+//   - options: Route configuration options
+//
+// Returns:
+//   - *Route: Registered route
+//
+// Example:
+//
+//	route := router.AddRoute("GET", "/users/:id", handler,
+//	    blaze.WithName("get_user"),
+//	    blaze.WithIntConstraint("id"),
+//	)
 func (r *Router) AddRoute(method, pattern string, handler HandlerFunc, options ...RouteOption) *Route {
 	route := &Route{
 		Method:      method,
@@ -358,9 +639,29 @@ func (r *Router) AddRoute(method, pattern string, handler HandlerFunc, options .
 }
 
 // RouteOption defines a function to configure routes
+// Provides fluent API for route configuration
+//
+// Example:
+//
+//	app.GET("/users/:id", handler,
+//	    blaze.WithName("get_user"),
+//	    blaze.WithMiddleware(authMiddleware),
+//	    blaze.WithIntConstraint("id"),
+//	)
 type RouteOption func(*Route)
 
 // WithName sets the route name
+// Enables route lookups and reverse routing
+//
+// Parameters:
+//   - name: Unique route identifier
+//
+// Returns:
+//   - RouteOption: Configuration function
+//
+// Example:
+//
+//	app.GET("/users/:id", handler, blaze.WithName("get_user"))
 func WithName(name string) RouteOption {
 	return func(r *Route) {
 		r.Name = name
@@ -368,6 +669,19 @@ func WithName(name string) RouteOption {
 }
 
 // WithMiddleware adds middleware to the route
+// Middleware is applied only to this specific route
+//
+// Parameters:
+//   - middleware: One or more middleware functions
+//
+// Returns:
+//   - RouteOption: Configuration function
+//
+// Example:
+//
+//	app.POST("/admin", handler,
+//	    blaze.WithMiddleware(authMiddleware, adminMiddleware),
+//	)
 func WithMiddleware(middleware ...MiddlewareFunc) RouteOption {
 	return func(r *Route) {
 		r.Middleware = append(r.Middleware, middleware...)
@@ -375,6 +689,23 @@ func WithMiddleware(middleware ...MiddlewareFunc) RouteOption {
 }
 
 // WithConstraint adds a parameter constraint
+// Validates parameter before routing
+//
+// Parameters:
+//   - param: Parameter name
+//   - constraint: Validation constraint
+//
+// Returns:
+//   - RouteOption: Configuration function
+//
+// Example:
+//
+//	constraint := blaze.RouteConstraint{
+//	    Name: "id",
+//	    Type: blaze.IntConstraint,
+//	    Pattern: regexp.MustCompile(`^\d+$`),
+//	}
+//	app.GET("/users/:id", handler, blaze.WithConstraint("id", constraint))
 func WithConstraint(param string, constraint *RouteConstraint) RouteOption {
 	return func(r *Route) {
 		r.Constraints[param] = constraint
@@ -382,6 +713,17 @@ func WithConstraint(param string, constraint *RouteConstraint) RouteOption {
 }
 
 // WithIntConstraint adds an integer constraint
+// Validates that parameter is a positive integer
+//
+// Parameters:
+//   - param: Parameter name
+//
+// Returns:
+//   - RouteOption: Configuration function
+//
+// Example:
+//
+//	app.GET("/users/:id", handler, blaze.WithIntConstraint("id"))
 func WithIntConstraint(param string) RouteOption {
 	return func(r *Route) {
 		r.Constraints[param] = &RouteConstraint{
@@ -393,6 +735,17 @@ func WithIntConstraint(param string) RouteOption {
 }
 
 // WithUUIDConstraint adds a UUID constraint
+// Validates that parameter is a valid UUID (RFC 4122)
+//
+// Parameters:
+//   - param: Parameter name
+//
+// Returns:
+//   - RouteOption: Configuration function
+//
+// Example:
+//
+//	app.GET("/resources/:id", handler, blaze.WithUUIDConstraint("id"))
 func WithUUIDConstraint(param string) RouteOption {
 	return func(r *Route) {
 		r.Constraints[param] = &RouteConstraint{
@@ -403,7 +756,21 @@ func WithUUIDConstraint(param string) RouteOption {
 	}
 }
 
-// WithRegexConstraint adds a regex constraint
+// WithRegexConstraint adds a custom regex constraint
+// Validates parameter against custom pattern
+//
+// Parameters:
+//   - param: Parameter name
+//   - pattern: Regex pattern string
+//
+// Returns:
+//   - RouteOption: Configuration function
+//
+// Example:
+//
+//	app.GET("/files/:name", handler,
+//	    blaze.WithRegexConstraint("name", `^[a-z0-9-]+$`),
+//	)
 func WithRegexConstraint(param string, pattern string) RouteOption {
 	return func(r *Route) {
 		r.Constraints[param] = &RouteConstraint{
@@ -656,7 +1023,31 @@ func (n *routeNode) insertChild(path, fullPath string, route *Route, method stri
 	n.handlers[method] = route
 }
 
-// Find matching route
+// FindRoute finds a matching route for the given method and path
+// Traverses radix tree to find best match
+//
+// Matching Process:
+//  1. Normalize path (case, trailing slash)
+//  2. Traverse radix tree
+//  3. Extract route parameters
+//  4. Validate constraints
+//  5. Return route and parameters
+//
+// Parameters:
+//   - method: HTTP method
+//   - path: Request path
+//
+// Returns:
+//   - *Route: Matched route or nil
+//   - map[string]string: Extracted parameters
+//   - bool: true if route found
+//
+// Example:
+//
+//	route, params, found := router.FindRoute("GET", "/users/123")
+//	// route: matched route
+//	// params: {"id": "123"}
+//	// found: true
 func (r *Router) FindRoute(method, path string) (*Route, map[string]string, bool) {
 	if !r.config.CaseSensitive {
 		path = strings.ToLower(path)
