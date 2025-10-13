@@ -54,7 +54,7 @@ func setupRoutes(app *blaze.App) {
 				"docs":   "/docs",
 			},
 		})
-	}, blaze.WithMiddleware(blaze.Cache(blaze.ProductionCacheOptions())))
+	})
 
 	// Health check
 	app.GET("/health", func(c *blaze.Context) error {
